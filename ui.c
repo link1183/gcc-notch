@@ -10,17 +10,17 @@
 #define H 656
 
 /* ---- palette (dark) ---------------------------------------------------- */
-static const Color BG = {15, 17, 23, 255};      /* window background      */
-static const Color PANEL = {25, 28, 38, 255};   /* card background       */
-static const Color PANEL2 = {19, 21, 29, 255};  /* inset / plot bg       */
-static const Color LINE = {42, 47, 61, 255};    /* borders / separators  */
-static const Color GRID = {38, 43, 56, 255};    /* faint grid            */
-static const Color TXT = {206, 212, 224, 255};  /* primary text          */
-static const Color DIM = {120, 130, 150, 255};  /* secondary text        */
-static const Color ACCENT = {91, 157, 255, 255};/* blue accent           */
-static const Color GOOD = {70, 214, 160, 255};  /* green                 */
-static const Color BAD = {255, 93, 108, 255};   /* red                   */
-static const Color WARN = {255, 196, 87, 255};  /* amber                 */
+static const Color BG = {15, 17, 23, 255};       /* window background      */
+static const Color PANEL = {25, 28, 38, 255};    /* card background       */
+static const Color PANEL2 = {19, 21, 29, 255};   /* inset / plot bg       */
+static const Color LINE = {42, 47, 61, 255};     /* borders / separators  */
+static const Color GRID = {38, 43, 56, 255};     /* faint grid            */
+static const Color TXT = {206, 212, 224, 255};   /* primary text          */
+static const Color DIM = {120, 130, 150, 255};   /* secondary text        */
+static const Color ACCENT = {91, 157, 255, 255}; /* blue accent           */
+static const Color GOOD = {70, 214, 160, 255};   /* green                 */
+static const Color BAD = {255, 93, 108, 255};    /* red                   */
+static const Color WARN = {255, 196, 87, 255};   /* amber                 */
 
 static Font FONT, FONTB; /* regular + semibold */
 
@@ -160,7 +160,8 @@ int main(int argc, char **argv) {
   GuiSetStyle(DEFAULT, BASE_COLOR_NORMAL, ColorToInt((Color){35, 39, 52, 255}));
   GuiSetStyle(DEFAULT, TEXT_COLOR_NORMAL, ColorToInt(TXT));
   GuiSetStyle(DEFAULT, BORDER_COLOR_FOCUSED, ColorToInt(ACCENT));
-  GuiSetStyle(DEFAULT, BASE_COLOR_FOCUSED, ColorToInt((Color){44, 50, 66, 255}));
+  GuiSetStyle(DEFAULT, BASE_COLOR_FOCUSED,
+              ColorToInt((Color){44, 50, 66, 255}));
   GuiSetStyle(DEFAULT, TEXT_COLOR_FOCUSED, ColorToInt(WHITE));
   GuiSetStyle(DEFAULT, BORDER_COLOR_PRESSED, ColorToInt(ACCENT));
   GuiSetStyle(DEFAULT, BASE_COLOR_PRESSED, ColorToInt(ACCENT));
@@ -185,9 +186,8 @@ int main(int argc, char **argv) {
     /* status pill, top-right */
     bool conn = eng_connected();
     Color sc = conn ? (eng_has_cal() ? GOOD : WARN) : BAD;
-    const char *st = conn ? (eng_has_cal() ? "ready"
-                                           : "not calibrated")
-                          : "disconnected";
+    const char *st =
+        conn ? (eng_has_cal() ? "ready" : "not calibrated") : "disconnected";
     float pw = MeasureTextEx(FONT, st, 14, 14 / 16.0f).x + 44;
     Rectangle pill = {W - 28 - pw, 18, pw, 28};
     DrawRectangleRounded(pill, 1.0f, 12, PANEL2);
@@ -242,7 +242,7 @@ int main(int argc, char **argv) {
           hi = eng_abs_max(code);
       bool tg = eng_is_trig(code);
       int outv = eng_trig_out(code, v);
-      float fr = (hi > lo) ? (float)(v - lo) / (hi - lo) : 0;   /* raw */
+      float fr = (hi > lo) ? (float)(v - lo) / (hi - lo) : 0;    /* raw */
       float fo = (hi > lo) ? (float)(outv - lo) / (hi - lo) : 0; /* remapped */
       txt(FONT, shortname(eng_code_name_abs(code)), apanel.x + 16, ty, 13, DIM);
       Rectangle bar = {apanel.x + 96, ty + 1, apanel.width - 96 - 16 - 50, 12};
@@ -255,8 +255,9 @@ int main(int argc, char **argv) {
       if (tg) {
         /* tick marking the actual raw (pre-rescale) position */
         float mx = bar.x + bar.width * fr;
-        DrawLineEx((Vector2){mx, bar.y - 3}, (Vector2){mx, bar.y + bar.height + 3},
-                   1.5f, Fade(DIM, 0.9f));
+        DrawLineEx((Vector2){mx, bar.y - 3},
+                   (Vector2){mx, bar.y + bar.height + 3}, 1.5f,
+                   Fade(DIM, 0.9f));
       }
       txt(FONT, TextFormat("%d%%", (int)(shown * 100 + 0.5f)),
           bar.x + bar.width + 8, ty, 13, tg ? GOOD : DIM);
@@ -349,9 +350,8 @@ int main(int argc, char **argv) {
       txt(FONT, "Calibrates every analog L/R trigger", box.x + 28, box.y + 52,
           14, ACCENT);
 
-      const char *msg = ph == 0
-                            ? "Let both triggers rest (fully released)."
-                            : "Now squeeze both triggers all the way down.";
+      const char *msg = ph == 0 ? "Let both triggers rest (fully released)."
+                                : "Now squeeze both triggers all the way down.";
       txt(FONT, msg, box.x + 28, box.y + 86, 16, TXT);
 
       for (int i = 0; i < 2; i++)

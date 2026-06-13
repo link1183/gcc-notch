@@ -180,7 +180,8 @@ static bool is_analog_abs(int c) {
          16;
 }
 
-/* rescale a raw trigger reading so calibrated rest..full spans the axis range */
+/* rescale a raw trigger reading so calibrated rest..full spans the axis range
+ */
 static int trig_apply(int code, int v) {
   if (code < 0 || code >= ABS_CNT || !trig_on[code] || !dev)
     return v;
