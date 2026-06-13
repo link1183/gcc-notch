@@ -1,0 +1,57 @@
+#pragma once
+#include <stdbool.h>
+
+#define ENG_NOTCH 8
+
+typedef struct {
+  int ax, ay;
+  double cx, cy;
+  double nx[ENG_NOTCH], ny[ENG_NOTCH];
+} eng_stick_cal;
+
+bool eng_open(const char *path); /* path or NULL to auto-find */
+void eng_close(void);
+void eng_poll(void); /* drain events; emit remapped output if active */
+bool eng_connected(void);
+
+int eng_axis_min(void);
+int eng_axis_max(void);
+
+bool eng_has_cal(void);
+const eng_stick_cal *eng_cal(int stick); /* 0=control, 1=cstick */
+void eng_measured_vec(int stick, int i, double *vx, double *vy);
+void eng_ideal_vec(int stick, int i, double *wx, double *wy);
+void eng_remap_point(int stick, int rx, int ry, int *ox, int *oy);
+
+int eng_raw(int code);
+bool eng_key(int code);
+int eng_list_keys(int *codes, int max);
+int eng_list_extra_abs(int *codes, int max);
+const char *eng_code_name_key(int code);
+const char *eng_code_name_abs(int code);
+int eng_abs_min(int code);
+int eng_abs_max(int code);
+
+bool eng_remap_active(void);
+bool eng_start_remap(void);
+void eng_stop_remap(void);
+
+double eng_get_diag(void);
+void eng_set_diag(double d);
+
+bool eng_load_cfg(void);
+bool eng_save_cfg(void);
+
+/* calibration wizard */
+void eng_cal_begin(void);
+bool eng_cal_active(void);
+int eng_cal_stick(void);
+int eng_cal_phase(void); /* 0=detect axes, 1=center, 2=notches */
+int eng_cal_notch(void);
+void eng_cal_advance(void);
+void eng_cal_cancel(void);
+
+/* device picker */
+int eng_dev_count(void);
+const char *eng_dev_path(void);
+void eng_dev_next(void);
