@@ -46,6 +46,14 @@ static bool is_stick[ABS_CNT];
 static double diag_frac = 0.70;
 static int amin = 0, amax = 255;
 
+/* analog trigger rescaling: map measured [lo,hi] onto the axis full range */
+static int trig_lo[ABS_CNT], trig_hi[ABS_CNT];
+static bool trig_on[ABS_CNT];
+static bool have_trig;
+static bool trig_active;
+static int trig_phase; /* 0 = capture rest, 1 = capture full press */
+static int t_lo[ABS_CNT], t_hi[ABS_CNT];
+
 static bool cal_active;
 static int cal_stick, cal_phase, cal_notch;
 static eng_stick_cal tmp[2];
@@ -161,6 +169,34 @@ static void rebuild_maps(void) {
   recompute_is_stick();
 }
 
+/* an analog (non-stick) axis worth treating as a trigger: real range, not a
+ * digital hat */
+static bool is_analog_abs(int c) {
+  if (c < 0 || c >= ABS_CNT || !dev || is_stick[c])
+    return false;
+  if (!libevdev_has_event_code(dev, EV_ABS, c))
+    return false;
+  return libevdev_get_abs_maximum(dev, c) - libevdev_get_abs_minimum(dev, c) >=
+         16;
+}
+
+/* rescale a raw trigger reading so calibrated rest..full spans the axis range */
+static int trig_apply(int code, int v) {
+  if (code < 0 || code >= ABS_CNT || !trig_on[code] || !dev)
+    return v;
+  int lo = trig_lo[code], hi = trig_hi[code];
+  if (hi <= lo)
+    return v;
+  int dmin = libevdev_get_abs_minimum(dev, code);
+  int dmax = libevdev_get_abs_maximum(dev, code);
+  double f = (double)(v - lo) / (hi - lo);
+  if (f < 0)
+    f = 0;
+  if (f > 1)
+    f = 1;
+  return (int)lround(dmin + f * (dmax - dmin));
+}
+
 static void emit_sticks(void) {
   int ox, oy;
   remap(&map[0], cur[cal[0].ax], cur[cal[0].ay], &ox, &oy);
@@ -203,6 +239,9 @@ bool eng_save_cfg(void) {
       fprintf(f, " %.3f %.3f", cal[k].nx[i], cal[k].ny[i]);
     fprintf(f, "\n");
   }
+  for (int c = 0; c < ABS_CNT; c++)
+    if (trig_on[c])
+      fprintf(f, "trigger %d %d %d\n", c, trig_lo[c], trig_hi[c]);
   fclose(f);
   return true;
 }
@@ -213,9 +252,22 @@ bool eng_load_cfg(void) {
   FILE *f = fopen(p, "r");
   if (!f)
     return false;
+  for (int c = 0; c < ABS_CNT; c++)
+    trig_on[c] = false;
+  have_trig = false;
   char a[64], b[64];
   int gc = 0, gk = 0;
   while (fscanf(f, "%63s %63s", a, b) == 2) {
+    if (!strcmp(a, "trigger")) {
+      int code = atoi(b), lo, hi;
+      if (fscanf(f, "%d %d", &lo, &hi) == 2 && code >= 0 && code < ABS_CNT) {
+        trig_lo[code] = lo;
+        trig_hi[code] = hi;
+        trig_on[code] = true;
+        have_trig = true;
+      }
+      continue;
+    }
     int s = !strcmp(a, "control") ? 0 : !strcmp(a, "cstick") ? 1 : -1;
     char ln[256];
     if (s < 0) {
@@ -322,6 +374,7 @@ bool eng_open(const char *path) {
   cal[0].ay = 1;
   cal[1].ax = 2;
   cal[1].ay = 5;
+  recompute_is_stick();
   scan_devices();
   if (path) {
     devidx = 0;
@@ -369,7 +422,7 @@ void eng_poll(void) {
     return;
   struct input_event ev;
   int rc;
-  bool emit = remapping && ui && !cal_active;
+  bool emit = remapping && ui && !cal_active && !trig_active;
   while ((rc = libevdev_next_event(dev, LIBEVDEV_READ_FLAG_NORMAL, &ev)) >= 0) {
     if (rc == LIBEVDEV_READ_STATUS_SYNC)
       continue;
@@ -377,7 +430,8 @@ void eng_poll(void) {
       if (ev.code < ABS_CNT)
         cur[ev.code] = ev.value;
       if (emit && ev.code < ABS_CNT && !is_stick[ev.code])
-        libevdev_uinput_write_event(ui, EV_ABS, ev.code, ev.value);
+        libevdev_uinput_write_event(ui, EV_ABS, ev.code,
+                                    trig_apply(ev.code, ev.value));
     } else if (ev.type == EV_KEY) {
       if (ev.code < KEY_CNT)
         keyst[ev.code] = ev.value;
@@ -400,6 +454,14 @@ void eng_poll(void) {
       if (cur[i] > hi6[i])
         hi6[i] = cur[i];
     }
+  if (trig_active)
+    for (int c = 0; c < ABS_CNT; c++)
+      if (is_analog_abs(c)) {
+        if (cur[c] < t_lo[c])
+          t_lo[c] = cur[c];
+        if (cur[c] > t_hi[c])
+          t_hi[c] = cur[c];
+      }
 }
 
 /* ---------- accessors ---------- */
@@ -556,3 +618,38 @@ void eng_cal_advance(void) {
     }
   }
 }
+
+/* ---------- trigger calibration ---------- */
+void eng_trig_begin(void) {
+  trig_active = true;
+  trig_phase = 0;
+  for (int c = 0; c < ABS_CNT; c++) {
+    t_lo[c] = INT_MAX;
+    t_hi[c] = INT_MIN;
+  }
+}
+bool eng_trig_active(void) { return trig_active; }
+int eng_trig_phase(void) { return trig_phase; }
+void eng_trig_cancel(void) { trig_active = false; }
+void eng_trig_advance(void) {
+  if (!trig_active)
+    return;
+  if (trig_phase == 0) {
+    trig_phase = 1;
+    return;
+  }
+  for (int c = 0; c < ABS_CNT; c++)
+    if (is_analog_abs(c) && t_hi[c] - t_lo[c] >= 16) {
+      trig_lo[c] = t_lo[c];
+      trig_hi[c] = t_hi[c];
+      trig_on[c] = true;
+      have_trig = true;
+    }
+  eng_save_cfg();
+  trig_active = false;
+}
+bool eng_has_trig(void) { return have_trig; }
+bool eng_is_trig(int code) {
+  return code >= 0 && code < ABS_CNT && trig_on[code];
+}
+int eng_trig_out(int code, int raw) { return trig_apply(code, raw); }

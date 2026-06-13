@@ -240,16 +240,31 @@ int main(int argc, char **argv) {
     for (int k = 0; k < m; k++) {
       int code = ac[k], v = eng_raw(code), lo = eng_abs_min(code),
           hi = eng_abs_max(code);
-      float f = (hi > lo) ? (float)(v - lo) / (hi - lo) : 0;
+      bool tg = eng_is_trig(code);
+      int outv = eng_trig_out(code, v);
+      float fr = (hi > lo) ? (float)(v - lo) / (hi - lo) : 0;   /* raw */
+      float fo = (hi > lo) ? (float)(outv - lo) / (hi - lo) : 0; /* remapped */
       txt(FONT, shortname(eng_code_name_abs(code)), apanel.x + 16, ty, 13, DIM);
-      Rectangle bar = {apanel.x + 96, ty + 1, apanel.width - 112, 12};
+      Rectangle bar = {apanel.x + 96, ty + 1, apanel.width - 96 - 16 - 50, 12};
       DrawRectangleRounded(bar, 1.0f, 6, PANEL2);
-      if (f > 0.001f) {
-        Rectangle fill = {bar.x, bar.y, bar.width * f, bar.height};
-        DrawRectangleRounded(fill, 1.0f, 6, ACCENT);
+      float shown = tg ? fo : fr;
+      if (shown > 0.001f) {
+        Rectangle fill = {bar.x, bar.y, bar.width * shown, bar.height};
+        DrawRectangleRounded(fill, 1.0f, 6, tg ? GOOD : ACCENT);
       }
+      if (tg) {
+        /* tick marking the actual raw (pre-rescale) position */
+        float mx = bar.x + bar.width * fr;
+        DrawLineEx((Vector2){mx, bar.y - 3}, (Vector2){mx, bar.y + bar.height + 3},
+                   1.5f, Fade(DIM, 0.9f));
+      }
+      txt(FONT, TextFormat("%d%%", (int)(shown * 100 + 0.5f)),
+          bar.x + bar.width + 8, ty, 13, tg ? GOOD : DIM);
       ty += 24;
     }
+    if (!eng_has_trig())
+      txt(FONT, "triggers not calibrated", apanel.x + 16,
+          apanel.y + apanel.height - 24, 12, DIM);
 
     /* ---- controls panel ------------------------------------------------ */
     Rectangle cp = {28, 436, 636, 132};
@@ -264,18 +279,20 @@ int main(int argc, char **argv) {
       else
         eng_start_remap();
     }
-    if (GuiButton((Rectangle){cp.x + 176, row1, 130, 34}, "Calibrate"))
+    if (GuiButton((Rectangle){cp.x + 176, row1, 150, 34}, "Calibrate Sticks"))
       eng_cal_begin();
-    if (GuiButton((Rectangle){cp.x + 316, row1, 130, 34}, "Reload cfg"))
-      eng_load_cfg();
+    if (GuiButton((Rectangle){cp.x + 336, row1, 170, 34}, "Calibrate Triggers"))
+      eng_trig_begin();
 
     float row2 = cp.y + 88;
     float df = (float)eng_get_diag();
-    GuiSliderBar((Rectangle){cp.x + 80, row2, 180, 30}, "Diag",
+    GuiSliderBar((Rectangle){cp.x + 72, row2, 150, 30}, "Diag",
                  TextFormat("%.2f", df), &df, 0.30f, 1.0f);
     if (fabsf(df - (float)eng_get_diag()) > 1e-4f)
       eng_set_diag(df);
-    if (GuiButton((Rectangle){cp.x + 316, row2, cp.width - 332, 30},
+    if (GuiButton((Rectangle){cp.x + 266, row2, 104, 30}, "Reload cfg"))
+      eng_load_cfg();
+    if (GuiButton((Rectangle){cp.x + 382, row2, cp.width - 398, 30},
                   TextFormat("Port:  %s", eng_dev_path())))
       eng_dev_next();
 
@@ -318,6 +335,55 @@ int main(int argc, char **argv) {
         eng_cal_advance();
       if (GuiButton((Rectangle){box.x + 322, box.y + 182, 150, 38}, "Cancel"))
         eng_cal_cancel();
+    }
+
+    /* ---- trigger calibration overlay ----------------------------------- */
+    if (eng_trig_active()) {
+      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
+      Rectangle box = {W / 2.0f - 250, H / 2.0f - 130, 500, 260};
+      DrawRectangleRounded(box, 0.06f, 10, PANEL);
+      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(ACCENT, 0.6f));
+
+      int ph = eng_trig_phase();
+      txt(FONTB, "Trigger Calibration", box.x + 28, box.y + 22, 22, TXT);
+      txt(FONT, "Calibrates every analog L/R trigger", box.x + 28, box.y + 52,
+          14, ACCENT);
+
+      const char *msg = ph == 0
+                            ? "Let both triggers rest (fully released)."
+                            : "Now squeeze both triggers all the way down.";
+      txt(FONT, msg, box.x + 28, box.y + 86, 16, TXT);
+
+      for (int i = 0; i < 2; i++)
+        DrawCircleV((Vector2){box.x + 28 + i * 16, box.y + 118}, 4,
+                    i <= ph ? ACCENT : LINE);
+
+      /* live readout of each analog axis */
+      int ac2[16];
+      int m2 = eng_list_extra_abs(ac2, 16);
+      float ly = box.y + 138;
+      for (int k = 0; k < m2; k++) {
+        int code = ac2[k], lo = eng_abs_min(code), hi = eng_abs_max(code);
+        if (hi - lo < 16)
+          continue;
+        float f = (float)(eng_raw(code) - lo) / (hi - lo);
+        txt(FONT, shortname(eng_code_name_abs(code)), box.x + 28, ly, 13, DIM);
+        Rectangle bar = {box.x + 150, ly + 1, 220, 10};
+        DrawRectangleRounded(bar, 1.0f, 6, PANEL2);
+        if (f > 0.001f)
+          DrawRectangleRounded(
+              (Rectangle){bar.x, bar.y, bar.width * f, bar.height}, 1.0f, 6,
+              ACCENT);
+        ly += 20;
+        if (ly > box.y + 188)
+          break;
+      }
+
+      if (GuiButton((Rectangle){box.x + 28, box.y + 202, 150, 38},
+                    ph == 0 ? "Next" : "Capture"))
+        eng_trig_advance();
+      if (GuiButton((Rectangle){box.x + 322, box.y + 202, 150, 38}, "Cancel"))
+        eng_trig_cancel();
     }
 
     EndDrawing();

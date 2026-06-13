@@ -51,6 +51,16 @@ int eng_cal_notch(void);
 void eng_cal_advance(void);
 void eng_cal_cancel(void);
 
+/* trigger calibration: rescale analog L/R so a full press hits full output */
+void eng_trig_begin(void);
+bool eng_trig_active(void);
+int eng_trig_phase(void); /* 0=capture rest, 1=capture full press */
+void eng_trig_advance(void);
+void eng_trig_cancel(void);
+bool eng_has_trig(void);
+bool eng_is_trig(int code);          /* axis is a calibrated trigger */
+int eng_trig_out(int code, int raw); /* rescaled output for preview */
+
 /* device picker */
 int eng_dev_count(void);
 const char *eng_dev_path(void);
