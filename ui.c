@@ -9,7 +9,7 @@
 #include <unistd.h>
 
 #define W 1060
-#define H 712
+#define H 756
 
 /* ---- palette (dark) ---------------------------------------------------- */
 static const Color BG = {15, 17, 23, 255};       /* window background      */
@@ -216,11 +216,13 @@ static void on_signal(int sig) {
 static int run_daemon(const char *devpath) {
   eng_load_cfg();
   if (!eng_has_cal()) {
-    fprintf(stderr,
-            "gcc-notch: no calibration found; run the GUI to calibrate first\n");
+    fprintf(
+        stderr,
+        "gcc-notch: no calibration found; run the GUI to calibrate first\n");
     return 1;
   }
-  eng_open(devpath); /* may be disconnected now; reconnect loop will pick it up */
+  eng_open(
+      devpath); /* may be disconnected now; reconnect loop will pick it up */
   signal(SIGINT, on_signal);
   signal(SIGTERM, on_signal);
   eng_start_remap(); /* sets intent; resumes automatically once connected */
@@ -233,14 +235,172 @@ static int run_daemon(const char *devpath) {
   return 0;
 }
 
+/* ---- GameCube stream viewer ------------------------------------------- */
+static void gc_button(Vector2 c, float r, const char *label, Color col,
+                      bool on) {
+  if (on) {
+    DrawCircleV(c, r * 1.22f, Fade(col, 0.28f));
+    DrawCircleV(c, r, col);
+  } else {
+    DrawCircleV(c, r, Fade(col, 0.16f));
+    DrawCircleLinesV(c, r, Fade(col, 0.85f));
+  }
+  if (label && *label) {
+    float fs = r * 0.85f;
+    if (fs > 24)
+      fs = 24;
+    if (fs < 11)
+      fs = 11;
+    Vector2 m = MeasureTextEx(FONTB, label, fs, fs / 16.0f);
+    Color tc = on ? (Color){10, 12, 16, 255} : Fade(col, 0.95f);
+    DrawTextEx(FONTB, label,
+               (Vector2){roundf(c.x - m.x / 2), roundf(c.y - m.y / 2)}, fs,
+               fs / 16.0f, tc);
+  }
+}
+
+static void gc_capsule(Rectangle r, const char *label, Color col, bool on) {
+  if (on)
+    DrawRectangleRounded(r, 1.0f, 8, col);
+  else {
+    DrawRectangleRounded(r, 1.0f, 8, Fade(col, 0.16f));
+    DrawRectangleRoundedLinesEx(r, 1.0f, 8, 1.5f, Fade(col, 0.85f));
+  }
+  Vector2 m = MeasureTextEx(FONTB, label, 17, 17 / 16.0f);
+  DrawTextEx(FONTB, label,
+             (Vector2){roundf(r.x + r.width / 2 - m.x / 2),
+                       roundf(r.y + r.height / 2 - m.y / 2)},
+             17, 17 / 16.0f, on ? (Color){10, 12, 16, 255} : Fade(col, 0.95f));
+}
+
+static void gc_trigger(Rectangle r, const char *label, Color col, float frac,
+                       bool full) {
+  DrawRectangleRounded(r, 1.0f, 8, Fade(col, 0.12f));
+  if (frac > 0.001f) {
+    Rectangle f = {r.x, r.y, r.width * frac, r.height};
+    DrawRectangleRounded(f, 1.0f, 8, Fade(col, full ? 1.0f : 0.55f));
+  }
+  DrawRectangleRoundedLinesEx(r, 1.0f, 8, full ? 2.5f : 1.5f,
+                              Fade(col, full ? 1.0f : 0.7f));
+  txt(FONTB, label, r.x - 26, r.y + r.height / 2 - 9, 18, col);
+  const char *p = TextFormat("%d%%", (int)(frac * 100 + 0.5f));
+  Vector2 m = MeasureTextEx(FONT, p, 13, 13 / 16.0f);
+  txt(FONT, p, r.x + r.width / 2 - m.x / 2, r.y + r.height / 2 - 7, 13,
+      full ? (Color){10, 12, 16, 255} : Fade(WHITE, 0.85f));
+}
+
+static void gc_stick_view(Vector2 c, float r, int vx, int vy, Color rim,
+                          Color dot, const char *label) {
+  DrawCircleV(c, r, Fade(rim, 0.10f));
+  DrawCircleLinesV(c, r, Fade(rim, 0.55f));
+  DrawCircleLinesV(c, r * 0.5f, Fade(rim, 0.25f));
+  float ox = (vx - 128) / 127.0f, oy = (vy - 128) / 127.0f;
+  ox = ox < -1 ? -1 : ox > 1 ? 1 : ox;
+  oy = oy < -1 ? -1 : oy > 1 ? 1 : oy;
+  Vector2 p = {c.x + ox * r * 0.82f, c.y + oy * r * 0.82f};
+  DrawLineEx(c, p, 2.0f, Fade(dot, 0.35f));
+  DrawCircleV(p, r * 3.2f / 18.0f, Fade(dot, 0.25f));
+  DrawCircleV(p, r * 2.4f / 18.0f, dot);
+  if (label && *label) {
+    Vector2 m = MeasureTextEx(FONT, label, 14, 14 / 16.0f);
+    txt(FONT, label, c.x - m.x / 2, c.y + r + 8, 14, Fade(rim, 0.9f));
+  }
+}
+
+static void gc_dpad(Vector2 c, float a) {
+  int dx, dy;
+  eng_dpad(&dx, &dy);
+  Color base = {150, 158, 176, 255};
+  float w = a * 0.74f;
+  Rectangle up = {c.x - w / 2, c.y - a, w, a};
+  Rectangle dn = {c.x - w / 2, c.y, w, a};
+  Rectangle lf = {c.x - a, c.y - w / 2, a, w};
+  Rectangle rt = {c.x, c.y - w / 2, a, w};
+  DrawRectangleRounded(lf, 0.2f, 4, dx < 0 ? base : Fade(base, 0.16f));
+  DrawRectangleRounded(rt, 0.2f, 4, dx > 0 ? base : Fade(base, 0.16f));
+  DrawRectangleRounded(up, 0.2f, 4, dy < 0 ? base : Fade(base, 0.16f));
+  DrawRectangleRounded(dn, 0.2f, 4, dy > 0 ? base : Fade(base, 0.16f));
+  DrawRectangleRounded((Rectangle){c.x - w / 2, c.y - w / 2, w, w}, 0.2f, 4,
+                       Fade(base, 0.16f));
+}
+
+static void draw_stream_view(int bg, bool show_hint) {
+  Color bgc = bg == 1   ? (Color){0, 177, 64, 255}
+              : bg == 2 ? (Color){255, 0, 255, 255}
+                        : (Color){8, 8, 10, 255};
+  ClearBackground(bgc);
+
+  bool cal = eng_has_cal();
+  const eng_stick_cal *c0 = eng_cal(0), *c1 = eng_cal(1);
+  int rx0 = eng_raw(c0->ax), ry0 = eng_raw(c0->ay), x0 = rx0, y0 = ry0;
+  int rx1 = eng_raw(c1->ax), ry1 = eng_raw(c1->ay), x1 = rx1, y1 = ry1;
+  if (cal) {
+    eng_remap_point(0, rx0, ry0, &x0, &y0);
+    eng_remap_point(1, rx1, ry1, &x1, &y1);
+  }
+
+  /* triggers (first two calibrated analog axes -> L, R) */
+  int tcodes[8], tn = 0, ac[16];
+  int m = eng_list_extra_abs(ac, 16);
+  for (int k = 0; k < m && tn < 8; k++)
+    if (eng_is_trig(ac[k]))
+      tcodes[tn++] = ac[k];
+  float lf = 0, rf = 0;
+  bool ld = eng_gc_pressed(5), rd = eng_gc_pressed(6);
+  if (tn > 0) {
+    int cd = tcodes[0], lo = eng_abs_min(cd), hi = eng_abs_max(cd);
+    if (hi > lo)
+      lf = (float)(eng_trig_out(cd, eng_raw(cd)) - lo) / (hi - lo);
+  }
+  if (tn > 1) {
+    int cd = tcodes[1], lo = eng_abs_min(cd), hi = eng_abs_max(cd);
+    if (hi > lo)
+      rf = (float)(eng_trig_out(cd, eng_raw(cd)) - lo) / (hi - lo);
+  }
+  if (ld && tn == 0)
+    lf = 1;
+  if (rd && tn < 2)
+    rf = 1;
+
+  Color grey = {175, 182, 198, 255};
+  gc_trigger((Rectangle){205, 116, 250, 34}, "L", grey, lf, ld || lf > 0.95f);
+  gc_trigger((Rectangle){630, 116, 250, 34}, "R", grey, rf, rd || rf > 0.95f);
+  gc_capsule((Rectangle){712, 250, 168, 28}, "Z", (Color){150, 120, 230, 255},
+             eng_gc_pressed(4));
+
+  gc_stick_view((Vector2){330, 392}, 100, x0, y0, grey, WHITE, "control");
+  gc_stick_view((Vector2){700, 548}, 64, x1, y1, (Color){245, 197, 66, 255},
+                (Color){245, 197, 66, 255}, "C-stick");
+  gc_dpad((Vector2){300, 612}, 26);
+
+  gc_button((Vector2){812, 380}, 46, "A", (Color){0, 180, 100, 255},
+            eng_gc_pressed(0));
+  gc_button((Vector2){744, 426}, 28, "B", (Color){222, 74, 74, 255},
+            eng_gc_pressed(1));
+  gc_button((Vector2){880, 372}, 30, "X", grey, eng_gc_pressed(2));
+  gc_button((Vector2){808, 306}, 30, "Y", grey, eng_gc_pressed(3));
+  gc_button((Vector2){530, 392}, 18, "", grey, eng_gc_pressed(7));
+  txt(FONT, "START", 530 - MeasureTextEx(FONT, "START", 12, 12 / 16.0f).x / 2,
+      392 + 24, 12, Fade(grey, 0.9f));
+
+  if (!eng_has_btnmap())
+    txt(FONT, "buttons not mapped - run \"Map Buttons\" in the main window", 24,
+        24, 14, Fade(WHITE, 0.6f));
+  if (show_hint)
+    txt(FONT, "V exit    B background    F borderless", 24, H - 30, 14,
+        Fade(WHITE, 0.5f));
+}
+
 int main(int argc, char **argv) {
   const char *devpath = NULL;
-  bool daemon_mode = false, auto_remap = false;
+  bool daemon_mode = false, auto_remap = false, start_viewer = false;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--daemon") || !strcmp(argv[i], "-d"))
       daemon_mode = true;
     else if (!strcmp(argv[i], "--remap"))
       auto_remap = true;
+    else if (!strcmp(argv[i], "--viewer"))
+      start_viewer = true;
     else
       devpath = argv[i];
   }
@@ -296,37 +456,73 @@ int main(int argc, char **argv) {
   bool name_modal = false, confirm_reset = false;
   char name_buf[64] = "";
 
+  /* stream-view state */
+  bool stream_view = start_viewer, borderless = false;
+  int stream_bg = 0; /* 0 = black, 1 = chroma green, 2 = chroma magenta */
+  double stream_enter = GetTime();
+
   while (!WindowShouldClose()) {
     eng_poll();
 
-    /* keyboard shortcuts (suppressed while a modal owns the screen) */
-    bool modal = eng_cal_active() || eng_trig_active() || name_modal ||
-                 confirm_reset;
-    if (!modal) {
-      if (IsKeyPressed(KEY_SPACE)) {
-        if (eng_remap_active())
-          eng_stop_remap();
-        else
-          eng_start_remap();
-      }
-      if (IsKeyPressed(KEY_C))
-        eng_cal_begin();
-      if (IsKeyPressed(KEY_T))
-        eng_trig_begin();
-      if (IsKeyPressed(KEY_R))
-        eng_load_cfg();
+    /* V toggles the stream viewer in either mode */
+    if (IsKeyPressed(KEY_V)) {
+      stream_view = !stream_view;
+      if (stream_view)
+        stream_enter = GetTime();
     }
-    if (IsKeyPressed(KEY_ESCAPE)) {
-      if (eng_cal_active())
-        eng_cal_cancel();
-      else if (eng_trig_active())
-        eng_trig_cancel();
-      else if (name_modal)
-        name_modal = false;
-      else if (confirm_reset)
-        confirm_reset = false;
-      else
-        break; /* quit */
+
+    if (stream_view) {
+      if (IsKeyPressed(KEY_B))
+        stream_bg = (stream_bg + 1) % 3;
+      if (IsKeyPressed(KEY_F)) {
+        borderless = !borderless;
+        if (borderless)
+          SetWindowState(FLAG_WINDOW_UNDECORATED);
+        else
+          ClearWindowState(FLAG_WINDOW_UNDECORATED);
+      }
+      if (IsKeyPressed(KEY_ESCAPE))
+        stream_view = false;
+    } else {
+      /* keyboard shortcuts (suppressed while a modal owns the screen) */
+      bool modal = eng_cal_active() || eng_trig_active() ||
+                   eng_btnmap_active() || name_modal || confirm_reset;
+      if (!modal) {
+        if (IsKeyPressed(KEY_SPACE)) {
+          if (eng_remap_active())
+            eng_stop_remap();
+          else
+            eng_start_remap();
+        }
+        if (IsKeyPressed(KEY_C))
+          eng_cal_begin();
+        if (IsKeyPressed(KEY_T))
+          eng_trig_begin();
+        if (IsKeyPressed(KEY_R))
+          eng_load_cfg();
+      }
+      if (IsKeyPressed(KEY_ESCAPE)) {
+        if (eng_cal_active())
+          eng_cal_cancel();
+        else if (eng_trig_active())
+          eng_trig_cancel();
+        else if (eng_btnmap_active())
+          eng_btnmap_cancel();
+        else if (name_modal)
+          name_modal = false;
+        else if (confirm_reset)
+          confirm_reset = false;
+        else
+          break; /* quit */
+      }
+    }
+
+    /* stream view replaces the whole window */
+    if (stream_view) {
+      BeginDrawing();
+      draw_stream_view(stream_bg, GetTime() - stream_enter < 4.0);
+      EndDrawing();
+      continue;
     }
 
     BeginDrawing();
@@ -415,7 +611,7 @@ int main(int argc, char **argv) {
       }
     }
 
-    Rectangle apanel = {684, 400, W - 684 - 28, 220};
+    Rectangle apanel = {684, 400, W - 684 - 28, 266};
     card(apanel);
     section_title("Axes / Triggers", apanel.x + 16, apanel.y + 12);
     int ac[16];
@@ -459,22 +655,24 @@ int main(int argc, char **argv) {
       eng_set_trig_dz(tz);
 
     /* ---- controls panel ------------------------------------------------ */
-    Rectangle cp = {28, 462, 636, 158};
+    Rectangle cp = {28, 462, 636, 204};
     card(cp);
     section_title("Controls", cp.x + 16, cp.y + 12);
 
     float row1 = cp.y + 44;
-    if (GuiButton((Rectangle){cp.x + 16, row1, 150, 34},
+    if (GuiButton((Rectangle){cp.x + 16, row1, 138, 34},
                   eng_remap_active() ? "Stop Remap" : "Start Remap")) {
       if (eng_remap_active())
         eng_stop_remap();
       else
         eng_start_remap();
     }
-    if (GuiButton((Rectangle){cp.x + 176, row1, 150, 34}, "Calibrate Sticks"))
+    if (GuiButton((Rectangle){cp.x + 160, row1, 140, 34}, "Calibrate Sticks"))
       eng_cal_begin();
-    if (GuiButton((Rectangle){cp.x + 336, row1, 170, 34}, "Calibrate Triggers"))
+    if (GuiButton((Rectangle){cp.x + 306, row1, 150, 34}, "Calibrate Triggers"))
       eng_trig_begin();
+    if (GuiButton((Rectangle){cp.x + 462, row1, 142, 34}, "Map Buttons"))
+      eng_btnmap_begin();
 
     float row2 = cp.y + 88;
     float dzc = (float)eng_get_deadzone();
@@ -526,6 +724,17 @@ int main(int argc, char **argv) {
     } else {
       txt(FONT, "(no profiles yet)", cp.x + 16, row3 + 6, 13, DIM);
     }
+
+    /* row4: stream viewer */
+    float row4 = cp.y + 168;
+    if (GuiButton((Rectangle){cp.x + 16, row4, 290, 30},
+                  "Open Stream View  (V)")) {
+      stream_view = true;
+      stream_enter = GetTime();
+    }
+    if (!eng_has_btnmap())
+      txt(FONT, "tip: Map Buttons first for the GameCube layout", cp.x + 320,
+          row4 + 8, 12, DIM);
 
     /* ---- calibration overlay ------------------------------------------- */
     if (eng_cal_active()) {
@@ -616,6 +825,40 @@ int main(int argc, char **argv) {
         eng_trig_cancel();
     }
 
+    /* ---- button-mapping wizard ----------------------------------------- */
+    if (eng_btnmap_active()) {
+      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
+      Rectangle box = {W / 2.0f - 230, H / 2.0f - 110, 460, 220};
+      DrawRectangleRounded(box, 0.06f, 10, PANEL);
+      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      txt(FONTB, "Map Buttons", box.x + 28, box.y + 22, 22, TXT);
+      txt(FONT,
+          TextFormat("Step %d / %d", eng_btnmap_index() + 1,
+                     eng_btnmap_total()),
+          box.x + 28, box.y + 54, 14, DIM);
+
+      const char *gcn = eng_btnmap_name();
+      txt(FONT, "Press your", box.x + 28, box.y + 92, 16, TXT);
+      txt(FONTB, gcn, box.x + 150, box.y + 88, 26, ACCENT);
+      txt(FONT, "button",
+          box.x + 150 + MeasureTextEx(FONTB, gcn, 26, 26 / 16.0f).x + 12,
+          box.y + 92, 16, TXT);
+      txt(FONT, "(or Skip if your controller lacks it)", box.x + 28,
+          box.y + 124, 13, DIM);
+
+      /* progress dots */
+      for (int i = 0; i < eng_btnmap_total(); i++)
+        DrawCircleV((Vector2){box.x + 28 + i * 18, box.y + 152}, 5,
+                    i < eng_btnmap_index()    ? GOOD
+                    : i == eng_btnmap_index() ? ACCENT
+                                              : LINE);
+
+      if (GuiButton((Rectangle){box.x + 28, box.y + 172, 150, 36}, "Skip"))
+        eng_btnmap_skip();
+      if (GuiButton((Rectangle){box.x + 282, box.y + 172, 150, 36}, "Cancel"))
+        eng_btnmap_cancel();
+    }
+
     /* ---- new-profile modal --------------------------------------------- */
     if (name_modal) {
       DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
@@ -647,8 +890,9 @@ int main(int argc, char **argv) {
       DrawRectangleRounded(box, 0.06f, 10, PANEL);
       DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(BAD, 0.6f));
       txt(FONTB, "Clear Calibration?", box.x + 28, box.y + 22, 22, TXT);
-      txt(FONT, TextFormat("This wipes calibration in profile \"%s\".",
-                           eng_profile_current()),
+      txt(FONT,
+          TextFormat("This wipes calibration in profile \"%s\".",
+                     eng_profile_current()),
           box.x + 28, box.y + 56, 14, DIM);
       if (GuiButton((Rectangle){box.x + 28, box.y + 104, 150, 38}, "Clear")) {
         eng_clear_cal();

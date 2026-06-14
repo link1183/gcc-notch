@@ -59,6 +59,16 @@ static bool trig_active;
 static int trig_phase; /* 0 = capture rest, 1 = capture full press */
 static int t_lo[ABS_CNT], t_hi[ABS_CNT];
 
+/* GameCube button map for the stream viewer */
+#define GC_N 8
+static const char *GC_NAMES[GC_N] = {"A", "B", "X", "Y",
+                                     "Z", "L", "R", "Start"};
+static int gc_btn[GC_N]; /* evdev BTN code per GC button, -1 = none */
+static bool have_btnmap; /* a mapping has been captured/loaded       */
+static int dpad_x = -1, dpad_y = -1; /* ABS hat axes for the D-pad */
+static bool map_active; /* mapping wizard running                  */
+static int map_idx;     /* which GC button we're capturing         */
+
 static bool cal_active;
 static int cal_stick, cal_phase, cal_notch;
 static eng_stick_cal tmp[2];
@@ -68,6 +78,7 @@ static char devpaths[16][64];
 static int devcount, devidx;
 
 static void remap_teardown(void); /* defined with the remap controls below */
+static void btnmap_advance(void); /* defined with the mapping wizard below */
 
 /* ---------- math ---------- */
 static void canonical_target(int k, double diag, double *tx, double *ty) {
@@ -266,6 +277,11 @@ static bool save_to(const char *p) {
   for (int c = 0; c < ABS_CNT; c++)
     if (trig_on[c])
       fprintf(f, "trigger %d %d %d\n", c, trig_lo[c], trig_hi[c]);
+  for (int i = 0; i < GC_N; i++)
+    if (gc_btn[i] >= 0)
+      fprintf(f, "gcbtn %d %d\n", i, gc_btn[i]);
+  if (dpad_x >= 0 || dpad_y >= 0)
+    fprintf(f, "dpad %d %d\n", dpad_x, dpad_y);
   fclose(f);
   return true;
 }
@@ -283,6 +299,10 @@ static bool load_from(const char *p) {
   deadzone = 0.0;
   trig_dz = 0.0;
   cal[0].ax = 0, cal[0].ay = 1, cal[1].ax = 2, cal[1].ay = 5;
+  for (int i = 0; i < GC_N; i++)
+    gc_btn[i] = -1;
+  have_btnmap = false;
+  dpad_x = dpad_y = -1;
   char a[64], b[64];
   int gc = 0, gk = 0;
   while (fscanf(f, "%63s %63s", a, b) == 2) {
@@ -303,6 +323,22 @@ static bool load_from(const char *p) {
           deadzone = val;
         else if (!strcmp(b, "trigdz"))
           trig_dz = val;
+      }
+      continue;
+    }
+    if (!strcmp(a, "gcbtn")) {
+      int idx = atoi(b), code;
+      if (fscanf(f, "%d", &code) == 1 && idx >= 0 && idx < GC_N) {
+        gc_btn[idx] = code;
+        have_btnmap = true;
+      }
+      continue;
+    }
+    if (!strcmp(a, "dpad")) {
+      int yy;
+      if (fscanf(f, "%d", &yy) == 1) {
+        dpad_x = atoi(b);
+        dpad_y = yy;
       }
       continue;
     }
@@ -651,7 +687,7 @@ void eng_poll(void) {
   }
   struct input_event ev;
   int rc;
-  bool emit = remapping && ui && !cal_active && !trig_active;
+  bool emit = remapping && ui && !cal_active && !trig_active && !map_active;
   while ((rc = libevdev_next_event(dev, LIBEVDEV_READ_FLAG_NORMAL, &ev)) >= 0) {
     if (rc == LIBEVDEV_READ_STATUS_SYNC)
       continue;
@@ -666,6 +702,17 @@ void eng_poll(void) {
       ev_count++;
       if (ev.code < KEY_CNT)
         keyst[ev.code] = ev.value;
+      /* mapping wizard: assign the first fresh button press to the cur step */
+      if (map_active && ev.value == 1 && map_idx < GC_N) {
+        bool used = false;
+        for (int i = 0; i < map_idx; i++)
+          if (gc_btn[i] == (int)ev.code)
+            used = true;
+        if (!used) {
+          gc_btn[map_idx] = ev.code;
+          btnmap_advance();
+        }
+      }
       if (emit)
         libevdev_uinput_write_event(ui, EV_KEY, ev.code, ev.value);
     } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
@@ -896,3 +943,76 @@ bool eng_is_trig(int code) {
   return code >= 0 && code < ABS_CNT && trig_on[code];
 }
 int eng_trig_out(int code, int raw) { return trig_apply(code, raw); }
+
+/* ---------- GameCube button map ---------- */
+/* find the D-pad: a non-stick hat axis (tiny range, signed) */
+static void detect_dpad(void) {
+  dpad_x = dpad_y = -1;
+  if (!dev)
+    return;
+  for (int c = 0; c < ABS_CNT; c++) {
+    if (!libevdev_has_event_code(dev, EV_ABS, c) || is_stick[c])
+      continue;
+    int mn = libevdev_get_abs_minimum(dev, c);
+    int mx = libevdev_get_abs_maximum(dev, c);
+    if (mx - mn > 2 || mn >= 0)
+      continue; /* not a hat */
+    const char *nm = libevdev_event_code_get_name(EV_ABS, c);
+    if (nm && strchr(nm, 'Y') && dpad_y < 0)
+      dpad_y = c;
+    else if (dpad_x < 0)
+      dpad_x = c;
+    else if (dpad_y < 0)
+      dpad_y = c;
+  }
+}
+
+static void btnmap_advance(void) {
+  map_idx++;
+  if (map_idx >= GC_N) {
+    detect_dpad();
+    have_btnmap = true;
+    eng_save_cfg();
+    map_active = false;
+  }
+}
+
+void eng_btnmap_begin(void) {
+  map_active = true;
+  map_idx = 0;
+  for (int i = 0; i < GC_N; i++)
+    gc_btn[i] = -1;
+}
+bool eng_btnmap_active(void) { return map_active; }
+int eng_btnmap_index(void) { return map_idx; }
+int eng_btnmap_total(void) { return GC_N; }
+const char *eng_btnmap_name(void) {
+  return (map_idx >= 0 && map_idx < GC_N) ? GC_NAMES[map_idx] : "";
+}
+void eng_btnmap_skip(void) {
+  if (!map_active)
+    return;
+  gc_btn[map_idx] = -1;
+  btnmap_advance();
+}
+void eng_btnmap_cancel(void) { map_active = false; }
+
+bool eng_has_btnmap(void) { return have_btnmap; }
+const char *eng_gc_name(int i) {
+  return (i >= 0 && i < GC_N) ? GC_NAMES[i] : "";
+}
+bool eng_gc_pressed(int i) {
+  if (i < 0 || i >= GC_N)
+    return false;
+  int c = gc_btn[i];
+  return c >= 0 && c < KEY_CNT && keyst[c];
+}
+/* D-pad direction as -1/0/+1 on each axis (raw hat sign; up = -y) */
+void eng_dpad(int *x, int *y) {
+  if (dpad_x < 0 && dpad_y < 0)
+    detect_dpad();
+  int vx = (dpad_x >= 0) ? cur[dpad_x] : 0;
+  int vy = (dpad_y >= 0) ? cur[dpad_y] : 0;
+  *x = (vx > 0) - (vx < 0);
+  *y = (vy > 0) - (vy < 0);
+}

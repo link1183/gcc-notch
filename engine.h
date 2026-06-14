@@ -75,6 +75,19 @@ bool eng_has_trig(void);
 bool eng_is_trig(int code);          /* axis is a calibrated trigger */
 int eng_trig_out(int code, int raw); /* rescaled output for preview */
 
+/* GameCube button mapping (for the stream viewer) */
+void eng_btnmap_begin(void);
+bool eng_btnmap_active(void);
+int eng_btnmap_index(void);        /* current step being captured */
+int eng_btnmap_total(void);        /* number of GC buttons to map */
+const char *eng_btnmap_name(void); /* label of the current step */
+void eng_btnmap_skip(void);        /* leave current button unmapped */
+void eng_btnmap_cancel(void);
+bool eng_has_btnmap(void);
+const char *eng_gc_name(int i); /* GC button name by index */
+bool eng_gc_pressed(int i);     /* is GC button i currently pressed */
+void eng_dpad(int *x, int *y);  /* D-pad direction, each -1/0/+1 */
+
 /* device picker */
 int eng_dev_count(void);
 const char *eng_dev_path(void);
