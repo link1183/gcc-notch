@@ -1,4 +1,6 @@
 #include "raylib.h"
+#include <stddef.h>
+#include <stdlib.h>
 #define RAYGUI_IMPLEMENTATION
 #include "engine.h"
 #include "skin.h"
@@ -31,6 +33,36 @@ static Font FONT, FONTB; /* regular + semibold */
 static void txt(Font f, const char *s, float x, float y, float sz, Color c) {
   /* snap to whole pixels so glyph edges stay crisp */
   DrawTextEx(f, s, (Vector2){roundf(x), roundf(y)}, sz, sz / 16.0f, c);
+}
+
+/* ---- viewer helpers ---------------------------------------------------- */
+static void viewer_path(char *b, size_t n) {
+  const char *h = getenv("HOME");
+  snprintf(b, n, "%s/.config/gcc-notch/viewer", h ? h : ".");
+}
+
+static void viewer_save(int bg, bool bl) {
+  char p[600];
+  viewer_path(p, sizeof p);
+  FILE *f = fopen(p, "w");
+  if (f) {
+    fprintf(f, "%d %d\n", bg, bl ? 1 : 0);
+    fclose(f);
+  }
+}
+
+static void viewer_load(int *bg, bool *bl) {
+  char p[600];
+  viewer_path(p, sizeof p);
+  FILE *f = fopen(p, "r");
+  if (f) {
+    int b = 0, d = 0;
+    if (fscanf(f, "%d %d", &b, &d) == 2) {
+      *bg = ((b % 3) + 3) % 3;
+      *bl = d != 0;
+    }
+    fclose(f);
+  }
 }
 
 /* ---- shape helpers ----------------------------------------------------- */
@@ -246,10 +278,14 @@ static void draw_stream_view(int bg, bool show_hint) {
   if (skin_have()) {
     skin_draw(W, H);
     if (show_hint) {
-      txt(FONT, TextFormat("skin: %s", skin_name(skin_current())), 24, 24, 14,
-          Fade(WHITE, 0.6f));
-      txt(FONT, "V exit    K skin    B background    F borderless", 24, H - 30,
-          14, Fade(WHITE, 0.5f));
+      const char *au = skin_author(skin_current());
+      txt(FONT,
+          (au && au[0])
+              ? TextFormat("skin: %s  ·  by %s", skin_name(skin_current()), au)
+              : TextFormat("skin: %s", skin_name(skin_current())),
+          +24, 24, 14, Fade(WHITE, 0.6f));
+      txt(FONT, "V exit    K skin    R reload    B background    F borderless",
+          24, H - 30, 14, Fade(WHITE, 0.5f));
     }
   } else {
     const char *m1 = "No skins found.";
@@ -301,6 +337,7 @@ int main(int argc, char **argv) {
 
   /* raygui dark theme */
   GuiSetFont(FONT);
+  skin_set_font(FONT);
   GuiSetStyle(DEFAULT, TEXT_SIZE, 16);
   GuiSetStyle(DEFAULT, BORDER_WIDTH, 1);
   GuiSetStyle(DEFAULT, BACKGROUND_COLOR, ColorToInt(BG));
@@ -333,6 +370,9 @@ int main(int argc, char **argv) {
   /* stream-view state */
   bool stream_view = start_viewer, borderless = false;
   int stream_bg = 0; /* 0 = black, 1 = chroma green, 2 = chroma magenta */
+  viewer_load(&stream_bg, &borderless);
+  if (borderless)
+    SetWindowState(FLAG_WINDOW_UNDECORATED);
   double stream_enter = GetTime();
 
   while (!WindowShouldClose()) {
@@ -346,16 +386,21 @@ int main(int argc, char **argv) {
     }
 
     if (stream_view) {
-      if (IsKeyPressed(KEY_B))
+      if (IsKeyPressed(KEY_B)) {
         stream_bg = (stream_bg + 1) % 3;
+        viewer_save(stream_bg, borderless);
+      }
       if (IsKeyPressed(KEY_K))
         skin_next();
+      if (IsKeyPressed(KEY_R))
+        skin_reload();
       if (IsKeyPressed(KEY_F)) {
         borderless = !borderless;
         if (borderless)
           SetWindowState(FLAG_WINDOW_UNDECORATED);
         else
           ClearWindowState(FLAG_WINDOW_UNDECORATED);
+        viewer_save(stream_bg, borderless);
       }
       if (IsKeyPressed(KEY_ESCAPE))
         stream_view = false;
@@ -478,7 +523,8 @@ int main(int argc, char **argv) {
         if (!on)
           DrawRectangleRoundedLinesEx(led, 0.35f, 4, 1.0f, LINE);
         txt(FONT,
-            mapped ? eng_gc_name(i)
+            mapped ? TextFormat("%-6s %s", eng_gc_name(i),
+                                shortname(eng_code_name_key(eng_gc_code(i))))
                    : TextFormat("%s  (unmapped)", eng_gc_name(i)),
             bx + 22, by - 1, 13, on ? TXT : (mapped ? DIM : Fade(DIM, 0.5f)));
         by += 22;

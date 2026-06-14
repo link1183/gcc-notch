@@ -32,6 +32,7 @@ typedef struct {
 typedef struct {
   char dir[512];
   char name[64];
+  char author[64];
   Texture2D bg;
   float bgw, bgh;
   skin_el el[EL_MAX];
@@ -132,6 +133,7 @@ static void parse_skin(const char *dir, skin_t *s) {
   prop_str(root, "name", s->name, sizeof s->name);
   if (!s->name[0])
     snprintf(s->name, sizeof s->name, "%s", GetFileName(dir));
+  prop_str(root, "author", s->author, sizeof s->author);
 
   for (xmlNode *n = root->children; n; n = n->next) {
     if (n->type != XML_ELEMENT_NODE)
@@ -277,9 +279,20 @@ void skin_unload_all(void) {
 }
 
 int skin_count(void) { return nskins; }
+
 const char *skin_name(int i) {
   return (i >= 0 && i < nskins) ? skins[i].name : "";
 }
+
+const char *skin_author(int i) {
+  return (i >= 0 && i < nskins) ? skins[i].author : "";
+}
+
+void skin_reload(void) {
+  skin_unload_all();
+  skin_load_all();
+}
+
 int skin_current(void) { return cur; }
 bool skin_have(void) { return cur >= 0 && cur < nskins; }
 void skin_select(int i) {
@@ -291,6 +304,13 @@ void skin_select(int i) {
 void skin_next(void) {
   if (nskins > 0)
     skin_select((cur + 1) % nskins);
+}
+
+static Font skin_font;
+static bool skin_have_font;
+void skin_set_font(Font f) {
+  skin_font = f;
+  skin_have_font = true;
 }
 
 void skin_draw(int win_w, int win_h) {
@@ -336,10 +356,20 @@ void skin_draw(int win_w, int win_h) {
       float nx = (vx - 128) / 127.0f, ny = (vy - 128) / 127.0f;
       nx = nx < -1 ? -1 : nx > 1 ? 1 : nx;
       ny = ny < -1 ? -1 : ny > 1 ? 1 : ny;
-      DrawTexturePro(
-          e->tex, full,
-          DST(e->x + nx * e->xrange, e->y + ny * e->yrange, e->w, e->h),
-          (Vector2){0, 0}, 0, WHITE);
+      Rectangle sr =
+          DST(e->x + nx * e->xrange, e->y + ny * e->yrange, e->w, e->h);
+      DrawTexturePro(e->tex, full, sr, (Vector2){0, 0}, 0, WHITE);
+      { /* live stick value, centered on the (moving) stick image */
+        Font f = skin_have_font ? skin_font : GetFontDefault();
+        const char *str = TextFormat("%d,%d", vx, vy);
+        float fs = sr.height * 0.22f;
+        fs = fs < 10 ? 10 : fs > 24 ? 24 : fs;
+        Vector2 m = MeasureTextEx(f, str, fs, 1);
+        Vector2 p = {sr.x + (sr.width - m.x) / 2, sr.y + (sr.height - m.y) / 2};
+        DrawTextEx(f, str, (Vector2){p.x + 1, p.y + 1}, fs, 1,
+                   Fade(BLACK, 0.75f));
+        DrawTextEx(f, str, p, fs, 1, WHITE);
+      }
 
     } else { /* EL_ANALOG */
       float f = trig_frac(e->trig);

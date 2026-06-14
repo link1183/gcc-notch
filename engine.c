@@ -1085,6 +1085,7 @@ bool eng_gc_pressed(int i) {
 }
 
 bool eng_gc_mapped(int i) { return i >= 0 && i < GC_N && gc_btn[i] >= 0; }
+int eng_gc_code(int i) { return (i >= 0 && i < GC_N) ? gc_btn[i] : -1; }
 
 /* D-pad direction as -1/0/+1 on each axis (raw hat sign; up = -y) */
 void eng_dpad(int *x, int *y) {
