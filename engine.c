@@ -829,6 +829,10 @@ int eng_abs_max(int c) { return dev ? libevdev_get_abs_maximum(dev, c) : 255; }
 
 bool eng_remap_active(void) { return remapping; }
 
+const char *eng_remap_devnode(void) {
+  return (remapping && ui) ? libevdev_uinput_get_devnode(ui) : NULL;
+}
+
 /* tear down the uinput mirror without forgetting the user's intent */
 static void remap_teardown(void) {
   if (ui) {

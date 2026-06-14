@@ -68,6 +68,61 @@ static void viewer_load(int *bg, bool *bl, bool *sv, bool *hp) {
   }
 }
 
+/* ---- separate viewer process (its own window) -------------------------- */
+static void viewer_src_path(char *b, size_t n) {
+  const char *h = getenv("HOME");
+  snprintf(b, n, "%s/.config/gcc-notch/viewer_src", h ? h : ".");
+}
+/* the control process publishes which devnode the viewer should read: the
+   virtual remap mirror while remapping, otherwise the physical controller */
+static void publish_viewer_src(void) {
+  const char *src = "";
+  if (eng_remap_active()) {
+    const char *d = eng_remap_devnode();
+    if (d)
+      src = d;
+  } else {
+    const char *d = eng_dev_path();
+    if (d && strcmp(d, "(none)"))
+      src = d;
+  }
+  static char last[300] = "\x01"; /* impossible value forces the first write */
+  if (!strcmp(src, last))
+    return;
+  snprintf(last, sizeof last, "%s", src);
+  char p[600];
+  viewer_src_path(p, sizeof p);
+  FILE *f = fopen(p, "w");
+  if (f) {
+    fprintf(f, "%s\n", src);
+    fclose(f);
+  }
+}
+static void read_viewer_src(char *out, size_t n) {
+  out[0] = 0;
+  char p[600];
+  viewer_src_path(p, sizeof p);
+  FILE *f = fopen(p, "r");
+  if (f) {
+    if (fgets(out, n, f))
+      out[strcspn(out, "\r\n")] = 0;
+    fclose(f);
+  }
+}
+/* spawn a second instance of ourselves as an independent viewer window */
+static void launch_viewer_window(void) {
+  char exe[512];
+  ssize_t n = readlink("/proc/self/exe", exe, sizeof exe - 1);
+  if (n <= 0)
+    return;
+  exe[n] = 0;
+  pid_t pid = fork();
+  if (pid == 0) {
+    execl(exe, exe, "--viewer", (char *)NULL);
+    _exit(127);
+  }
+}
+
 /* ---- shape helpers ----------------------------------------------------- */
 static void card(Rectangle r) {
   DrawRectangleRounded(r, 0.045f, 8, PANEL);
@@ -317,16 +372,85 @@ static void fit_window_to_skin(void) {
   }
 }
 
+/* dedicated viewer process: no controls, follows the device the control
+   process publishes (physical when idle, virtual remap mirror when remapping) */
+static void run_viewer_loop(void) {
+  SetWindowTitle("GCC Notch Viewer");
+  skin_set_remap_display(false); /* show the source device's raw values */
+  int bg = 0;
+  bool bl = false, sv = true, hp = false;
+  viewer_load(&bg, &bl, &sv, &hp);
+  skin_set_values(sv);
+  if (bl)
+    SetWindowState(FLAG_WINDOW_UNDECORATED);
+  fit_window_to_skin();
+
+  char cur_src[300] = "";
+  double last_chk = 0, enter = GetTime();
+  while (!WindowShouldClose()) {
+    eng_poll();
+    if (GetTime() - last_chk > 0.25) { /* follow the published input device */
+      last_chk = GetTime();
+      char src[300];
+      read_viewer_src(src, sizeof src);
+      if (src[0] && strcmp(src, cur_src)) {
+        eng_close();
+        eng_open(src);
+        snprintf(cur_src, sizeof cur_src, "%s", src);
+      } else if (!src[0] && !eng_connected()) {
+        eng_open(NULL);
+      }
+    }
+    Vector2 md = GetMouseDelta();
+    if (md.x != 0.0f || md.y != 0.0f)
+      enter = GetTime();
+    if (IsKeyPressed(KEY_K)) {
+      skin_next();
+      fit_window_to_skin();
+    }
+    if (IsKeyPressed(KEY_R)) {
+      skin_reload();
+      fit_window_to_skin();
+    }
+    if (IsKeyPressed(KEY_B)) {
+      bg = (bg + 1) % 3;
+      viewer_save(bg, bl, sv, hp);
+    }
+    if (IsKeyPressed(KEY_N)) {
+      sv = !sv;
+      skin_set_values(sv);
+      viewer_save(bg, bl, sv, hp);
+    }
+    if (IsKeyPressed(KEY_H)) {
+      hp = !hp;
+      viewer_save(bg, bl, sv, hp);
+    }
+    if (IsKeyPressed(KEY_F)) {
+      bl = !bl;
+      if (bl)
+        SetWindowState(FLAG_WINDOW_UNDECORATED);
+      else
+        ClearWindowState(FLAG_WINDOW_UNDECORATED);
+      viewer_save(bg, bl, sv, hp);
+    }
+    if (IsKeyPressed(KEY_V) || IsKeyPressed(KEY_ESCAPE))
+      break;
+    BeginDrawing();
+    draw_stream_view(bg, hp || GetTime() - enter < 4.0);
+    EndDrawing();
+  }
+}
+
 int main(int argc, char **argv) {
   const char *devpath = NULL;
-  bool daemon_mode = false, auto_remap = false, start_viewer = false;
+  bool daemon_mode = false, auto_remap = false, viewer_proc = false;
   for (int i = 1; i < argc; i++) {
     if (!strcmp(argv[i], "--daemon") || !strcmp(argv[i], "-d"))
       daemon_mode = true;
     else if (!strcmp(argv[i], "--remap"))
       auto_remap = true;
     else if (!strcmp(argv[i], "--viewer"))
-      start_viewer = true;
+      viewer_proc = true; /* run as a standalone viewer window */
     else
       devpath = argv[i];
   }
@@ -375,6 +499,16 @@ int main(int argc, char **argv) {
   eng_load_cfg();
   eng_open(devpath);
   skin_load_all();
+
+  /* standalone viewer process: just the overlay, driven by the control app */
+  if (viewer_proc) {
+    run_viewer_loop();
+    eng_close();
+    CloseWindow();
+    return 0;
+  }
+
+  signal(SIGCHLD, SIG_IGN); /* reap spawned viewer windows automatically */
   if (auto_remap)
     eng_start_remap();
 
@@ -387,7 +521,7 @@ int main(int argc, char **argv) {
   char name_buf[64] = "";
 
   /* stream-view state */
-  bool stream_view = start_viewer, borderless = false;
+  bool stream_view = false, borderless = false;
   int stream_bg = 0;       /* 0 = black, 1 = chroma green, 2 = chroma magenta */
   bool show_values = true; /* numeric stick readout overlay (toggle: N) */
   bool hint_pin = false;   /* H keeps the keybind hints on screen */
@@ -400,6 +534,7 @@ int main(int argc, char **argv) {
 
   while (!WindowShouldClose()) {
     eng_poll();
+    publish_viewer_src(); /* keep any viewer window pointed at the right device */
 
     /* V toggles the stream viewer in either mode */
     if (IsKeyPressed(KEY_V)) {
@@ -721,10 +856,8 @@ int main(int argc, char **argv) {
     /* row4: stream viewer + skin selector */
     float row4 = cp.y + 168;
     if (GuiButton((Rectangle){cp.x + 16, row4, 230, 30},
-                  "Open Stream View  (V)")) {
-      stream_view = true;
-      stream_enter = GetTime();
-    }
+                  "Open Viewer Window"))
+      launch_viewer_window(); /* separate process; V still opens it in-window */
     txt(FONT, "Skin", cp.x + 258, row4 + 8, 13, DIM);
     /* dropdown drawn after everything else so its open list overlays cleanly */
     int skc = skin_count();

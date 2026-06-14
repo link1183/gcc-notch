@@ -94,3 +94,6 @@ void eng_dpad(int *x, int *y);  /* D-pad direction, each -1/0/+1 */
 int eng_dev_count(void);
 const char *eng_dev_path(void);
 void eng_dev_next(void);
+/* /dev/input node of the virtual remap device while remapping, else NULL.
+   Lets a separate viewer process read the post-remap output. */
+const char *eng_remap_devnode(void);

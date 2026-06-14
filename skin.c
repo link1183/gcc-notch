@@ -315,12 +315,14 @@ void skin_next(void) {
 
 static Font skin_font;
 static bool skin_have_font;
-static bool skin_show_values = true; /* toggled from the viewer (N key) */
+static bool skin_show_values = true;   /* toggled from the viewer (N key) */
+static bool skin_remap_display = true; /* false: show the source device raw */
 void skin_set_font(Font f) {
   skin_font = f;
   skin_have_font = true;
 }
 void skin_set_values(bool on) { skin_show_values = on; }
+void skin_set_remap_display(bool on) { skin_remap_display = on; }
 
 void skin_draw(int win_w, int win_h) {
   if (cur < 0 || cur >= nskins)
@@ -360,7 +362,7 @@ void skin_draw(int win_w, int win_h) {
     } else if (e->kind == EL_STICK) {
       const eng_stick_cal *c = eng_cal(e->stick);
       int rx = eng_raw(c->ax), ry = eng_raw(c->ay), vx = rx, vy = ry;
-      if (cal)
+      if (cal && skin_remap_display)
         eng_remap_point(e->stick, rx, ry, &vx, &vy);
       float nx = (vx - 128) / 127.0f, ny = (vy - 128) / 127.0f;
       nx = nx < -1 ? -1 : nx > 1 ? 1 : nx;

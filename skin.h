@@ -20,6 +20,7 @@ bool skin_size(int *w, int *h); /* active skin bg pixel size; false if none */
 
 void skin_set_font(Font f);    /* font used for on-screen stick values */
 void skin_set_values(bool on); /* show/hide the numeric stick readout */
+void skin_set_remap_display(bool on); /* false: draw the source device raw */
 /* Draw the active skin, scaled to fit and centered in win_w x win_h.
    Does NOT clear the background (caller controls chroma key). */
 void skin_draw(int win_w, int win_h);
