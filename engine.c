@@ -797,6 +797,69 @@ static bool open_path(const char *path) {
   return true;
 }
 
+/* The Mayflash adapter presents one event node per port, all identical in name
+   and capabilities, so the matched node order (raw readdir order) tells us
+   nothing about which port actually has a controller. An empty port reports a
+   fixed power-on axis state (sticks centered, triggers/C-stick pinned), so every
+   empty port has a byte-identical resting vector while a connected controller
+   sits at its own real analog offset. Signature each node by its ABS state; the
+   most common signature is "empty", and the controller is the odd one out. Move
+   it to the front so auto-open (devidx 0) lands on the real controller. The Port
+   button still cycles through all of them. (The adapter doesn't stream events
+   while idle, so this resting-state check is more reliable than sampling for
+   activity.) */
+static unsigned long abs_signature(const char *path) {
+  int fd = open(path, O_RDONLY | O_NONBLOCK);
+  if (fd < 0)
+    return 0;
+  struct libevdev *d = NULL;
+  if (libevdev_new_from_fd(fd, &d) < 0) {
+    close(fd);
+    return 0;
+  }
+  unsigned long h = 1469598103934665603UL; /* FNV-1a over (code, value) pairs */
+  for (int c = 0; c < ABS_CNT; c++)
+    if (libevdev_has_event_code(d, EV_ABS, c)) {
+      h = (h ^ (unsigned)c) * 1099511628211UL;
+      h = (h ^ (unsigned)libevdev_get_event_value(d, EV_ABS, c)) *
+          1099511628211UL;
+    }
+  libevdev_free(d);
+  close(fd);
+  return h;
+}
+static void pick_live_device(void) {
+  if (devcount < 2)
+    return;
+  unsigned long sig[16];
+  for (int i = 0; i < devcount; i++)
+    sig[i] = abs_signature(devpaths[i]);
+  /* find the most common signature: that's the shared "empty port" state */
+  int empty = 0, bestcnt = 0;
+  for (int i = 0; i < devcount; i++) {
+    int c = 0;
+    for (int j = 0; j < devcount; j++)
+      if (sig[j] == sig[i])
+        c++;
+    if (c > bestcnt) {
+      bestcnt = c;
+      empty = i;
+    }
+  }
+  if (bestcnt < 2) /* no clear majority of identical empty ports: leave as-is */
+    return;
+  for (int i = 0; i < devcount; i++)
+    if (sig[i] != sig[empty]) { /* first node unlike the empty ports wins */
+      if (i != 0) {
+        char swap[64];
+        memcpy(swap, devpaths[0], sizeof swap);
+        memcpy(devpaths[0], devpaths[i], sizeof swap);
+        memcpy(devpaths[i], swap, sizeof swap);
+      }
+      return;
+    }
+}
+
 static void scan_devices(void) {
   devcount = 0;
   DIR *dd = opendir("/dev/input");
@@ -822,6 +885,7 @@ static void scan_devices(void) {
     close(fd);
   }
   closedir(dd);
+  pick_live_device();
 }
 bool eng_open(const char *path) {
   ENG_GUARD;

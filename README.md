@@ -11,29 +11,30 @@ It targets the device that identifies itself as
 
 ---
 
-## Table of contents
+# Table of contents
 
-- [What it does](#what-it-does)
-- [How it works](#how-it-works)
-- [Building](#building)
-- [Installing](#installing)
-- [Permissions](#permissions)
-- [Running](#running)
-  - [Command-line flags](#command-line-flags)
-  - [Keyboard shortcuts](#keyboard-shortcuts)
-- [Calibration](#calibration)
-  - [Stick calibration](#stick-calibration)
-  - [Trigger calibration](#trigger-calibration)
-  - [Button mapping](#button-mapping)
-  - [Tuning knobs](#tuning-knobs)
-- [Remapping](#remapping)
-- [Profiles](#profiles)
-- [Stream viewer & skins](#stream-viewer--skins)
-  - [Skin format](#skin-format)
-- [Speedrun stats & LiveSplit](#speedrun-stats--livesplit)
-- [Exports](#exports)
-- [Files on disk](#files-on-disk)
-- [Source layout](#source-layout)
+- [gcc-notch](#gcc-notch)
+  - [What it does](#what-it-does)
+  - [How it works](#how-it-works)
+  - [Building](#building)
+  - [Installing](#installing)
+  - [Permissions](#permissions)
+  - [Running](#running)
+    - [Command-line flags](#command-line-flags)
+    - [Keyboard shortcuts](#keyboard-shortcuts)
+  - [Calibration](#calibration)
+    - [Stick calibration](#stick-calibration)
+    - [Trigger calibration](#trigger-calibration)
+    - [Button mapping](#button-mapping)
+    - [Tuning knobs](#tuning-knobs)
+  - [Remapping](#remapping)
+  - [Profiles](#profiles)
+  - [Stream viewer & skins](#stream-viewer-&-skins)
+    - [Skin format](#skin-format)
+  - [Speedrun stats & LiveSplit](#speedrun-stats-&-livesplit)
+  - [Exports](#exports)
+  - [Files on disk](#files-on-disk)
+  - [Source layout](#source-layout)
 
 ---
 
@@ -68,12 +69,12 @@ hidden or throttled by the compositor.
 
 ```
                     ┌──────────────────────────────────────────┐
-  physical adapter  │  engine.c                                 │
-  /dev/input/eventN │   • libevdev read + exclusive grab        │
-        │           │   • per-sector affine notch correction    │   uinput
-        └──────────▶│   • libevdev-uinput mirror (remap output) │──────────▶ games
-                    │   • input stats + passive drift watch     │
-                    │   ── background IO thread (~2 kHz) ──      │
+  physical adapter  │  engine.c                                │
+  /dev/input/eventN │   • libevdev read + exclusive grab       │
+        │           │   • per-sector affine notch correction   │   uinput
+        └──────────▶│   • libevdev-uinput mirror (remap output)│──────────▶ games
+                    │   • input stats + passive drift watch    │
+                    │   ── background IO thread (~2 kHz) ──    │
                     └──────────────────────────────────────────┘
                          ▲                         ▲
             engine API   │                         │   skin API
@@ -174,41 +175,47 @@ gcc-notch-ui /dev/input/event7   # or point it at a specific node
 On a tiling compositor the editor maximises to fill the screen; its layout is a
 fixed design canvas scaled to fit, so it stays usable at any window size.
 
+Multi-port adapters expose one identical event node per port. Auto-detect
+inspects the resting axis state of every matching node and selects the one with a
+controller actually plugged in (empty ports report a fixed default state; the
+connected port sits at its own analog offset). The **Port** button in the
+Controls panel cycles through all of them if you need a different one.
+
 ### Command-line flags
 
-| Flag                | Effect                                                                 |
-| ------------------- | ---------------------------------------------------------------------- |
-| *(none)*            | Full editor GUI.                                                       |
-| `<devpath>`         | Open a specific `/dev/input/eventN` instead of auto-detecting.        |
-| `--remap`           | Start remapping immediately on launch (once calibrated & connected).  |
-| `--daemon`, `-d`    | Headless: load the saved profile, remap, and run with no window. Needs an existing calibration. Stop with `Ctrl-C`. |
-| `--viewer`          | Run as a standalone, size-locked overlay window (see [stream viewer](#stream-viewer--skins)). |
+| Flag             | Effect                                                                                                              |
+| ---------------- | ------------------------------------------------------------------------------------------------------------------- |
+| _(none)_         | Full editor GUI.                                                                                                    |
+| `<devpath>`      | Open a specific `/dev/input/eventN` instead of auto-detecting.                                                      |
+| `--remap`        | Start remapping immediately on launch (once calibrated & connected).                                                |
+| `--daemon`, `-d` | Headless: load the saved profile, remap, and run with no window. Needs an existing calibration. Stop with `Ctrl-C`. |
+| `--viewer`       | Run as a standalone, size-locked overlay window (see [stream viewer](#stream-viewer--skins)).                       |
 
 ### Keyboard shortcuts
 
 **Editor:**
 
-| Key     | Action                                  |
-| ------- | --------------------------------------- |
-| `Space` | Start / stop remap                      |
-| `C`     | Calibrate sticks                        |
-| `T`     | Calibrate triggers                      |
-| `S`     | Open input statistics                   |
-| `R`     | Reload the active profile from disk     |
-| `V`     | Toggle the in-window stream viewer      |
-| `Esc`   | Cancel the open modal, or quit          |
+| Key     | Action                              |
+| ------- | ----------------------------------- |
+| `Space` | Start / stop remap                  |
+| `C`     | Calibrate sticks                    |
+| `T`     | Calibrate triggers                  |
+| `S`     | Open input statistics               |
+| `R`     | Reload the active profile from disk |
+| `V`     | Toggle the in-window stream viewer  |
+| `Esc`   | Cancel the open modal, or quit      |
 
 **Stream viewer** (in-window or standalone process):
 
-| Key       | Action                                            |
-| --------- | ------------------------------------------------- |
-| `V` / `Esc` | Exit the viewer                                 |
-| `K`       | Cycle to the next skin                            |
-| `R`       | Reload skins from disk                            |
-| `B`       | Cycle background: black → chroma green → magenta  |
-| `N`       | Toggle the numeric stick value readout            |
-| `F`       | Toggle borderless (undecorated) window            |
-| `H`       | Pin the keybind hint bar on screen                |
+| Key         | Action                                           |
+| ----------- | ------------------------------------------------ |
+| `V` / `Esc` | Exit the viewer                                  |
+| `K`         | Cycle to the next skin                           |
+| `R`         | Reload skins from disk                           |
+| `B`         | Cycle background: black → chroma green → magenta |
+| `N`         | Toggle the numeric stick value readout           |
+| `F`         | Toggle borderless (undecorated) window           |
+| `H`         | Pin the keybind hint bar on screen               |
 
 ---
 
@@ -223,7 +230,7 @@ Press **Calibrate Sticks** (or `C`). For the control stick, then the C-stick:
 
 1. **Spin** the stick around its full gate so the tool can discover which two
    axes move (it picks the two with the largest travel).
-2. **Orient** — push and hold fully *right* so it can tell the X axis from the Y
+2. **Orient** — push and hold fully _right_ so it can tell the X axis from the Y
    axis and their sign.
 3. **Centre** — let the stick rest, then capture the resting position.
 4. **Notches** — hold each of the eight gate notches in turn (8 captures).
@@ -266,7 +273,7 @@ can never push the output past full-stick radius.
 ## Remapping
 
 **Start Remap** (or `Space`) grabs the controller exclusively and creates a
-`uinput` mirror named *GCC Notch Remap* carrying the corrected sticks and the
+`uinput` mirror named _GCC Notch Remap_ carrying the corrected sticks and the
 rescaled triggers; all other events pass through untouched. A pulsing **REMAP
 ACTIVE** badge shows in the header.
 
@@ -344,12 +351,12 @@ whole skin is scaled uniformly to the window.
 
 Element reference:
 
-| Element       | Key attributes | Meaning |
-| ------------- | -------------- | ------- |
-| `<background>`| `image` | Base layer; defines the skin's native pixel size. Required. |
-| `<button>`    | `name`, `image`, `x y width height` | Drawn only while pressed. `name` ∈ A,B,X,Y,Z,L,R,Start, or D-pad `up/down/left/right`. |
-| `<stick>`     | `xname` (`lstick_x` / `cstick_x`), `image`, `x y width height`, `xrange yrange` | Image translates with the stick; `xrange`/`yrange` are the max pixel travel from centre. |
-| `<analog>`    | `name` (`trig_l` / `trig_r`), `image`, `x y width height`, `direction` (`right`/`left`/`up`/`down`), `reverse` | Progressive reveal proportional to trigger pull; `direction` is the fill anchor, `reverse` inverts the fraction. |
+| Element        | Key attributes                                                                                                 | Meaning                                                                                                          |
+| -------------- | -------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------- |
+| `<background>` | `image`                                                                                                        | Base layer; defines the skin's native pixel size. Required.                                                      |
+| `<button>`     | `name`, `image`, `x y width height`                                                                            | Drawn only while pressed. `name` ∈ A,B,X,Y,Z,L,R,Start, or D-pad `up/down/left/right`.                           |
+| `<stick>`      | `xname` (`lstick_x` / `cstick_x`), `image`, `x y width height`, `xrange yrange`                                | Image translates with the stick; `xrange`/`yrange` are the max pixel travel from centre.                         |
+| `<analog>`     | `name` (`trig_l` / `trig_r`), `image`, `x y width height`, `direction` (`right`/`left`/`up`/`down`), `reverse` | Progressive reveal proportional to trigger pull; `direction` is the fill anchor, `reverse` inverts the fraction. |
 
 Up to 32 skins with 64 elements each are loaded; only skins with a valid
 background are kept. The selection persists in the `skin` file. A working
@@ -399,18 +406,18 @@ All exports land in the config directory, named by timestamp.
 
 Everything lives under `~/.config/gcc-notch/`:
 
-| Path                      | Contents |
-| ------------------------- | -------- |
-| `profiles/<name>.conf`    | Calibration profiles (axes, centre, notches, diag, deadzones, triggers, button map, D-pad). |
-| `active`                  | Name of the selected profile. |
-| `calib.conf`              | Legacy single-file config; migrated to `profiles/default.conf` once. |
-| `stats.conf`              | Lifetime input statistics. |
-| `runs.log`                | One finished run per line: `unix_time \t game_ms \t presses`. |
-| `skins/<dir>/skin.xml`    | Installed skins (+ their images). |
-| `skin`                    | Selected skin directory name. |
-| `viewer`                  | Viewer prefs: `background borderless values pin`. |
-| `viewer_src`              | Devnode the viewer process should read (written by the control process). |
-| `stats-*.csv`, `run-*.csv`, `run-*.png` | Timestamped exports. |
+| Path                                    | Contents                                                                                    |
+| --------------------------------------- | ------------------------------------------------------------------------------------------- |
+| `profiles/<name>.conf`                  | Calibration profiles (axes, centre, notches, diag, deadzones, triggers, button map, D-pad). |
+| `active`                                | Name of the selected profile.                                                               |
+| `calib.conf`                            | Legacy single-file config; migrated to `profiles/default.conf` once.                        |
+| `stats.conf`                            | Lifetime input statistics.                                                                  |
+| `runs.log`                              | One finished run per line: `unix_time \t game_ms \t presses`.                               |
+| `skins/<dir>/skin.xml`                  | Installed skins (+ their images).                                                           |
+| `skin`                                  | Selected skin directory name.                                                               |
+| `viewer`                                | Viewer prefs: `background borderless values pin`.                                           |
+| `viewer_src`                            | Devnode the viewer process should read (written by the control process).                    |
+| `stats-*.csv`, `run-*.csv`, `run-*.png` | Timestamped exports.                                                                        |
 
 Config files are written atomically (temp file + `rename`) where it matters.
 
@@ -418,12 +425,12 @@ Config files are written atomically (temp file + `rename`) where it matters.
 
 ## Source layout
 
-| File           | Responsibility |
-| -------------- | -------------- |
-| `engine.c/.h`  | Device I/O, calibration math, uinput remap mirror, stats, drift watch, profiles, the background input thread. |
-| `ui.c`         | raylib/raygui editor, calibration/trigger/button-map modals, stats overlay & exports, daemon + standalone-viewer roles, `main()`. |
-| `skin.c/.h`    | XML skin loading and drawing. |
-| `livesplit.c/.h` | LiveSplit Server listener and run-state parsing. |
-| `raygui.h`     | Vendored immediate-mode GUI (third-party). |
-| `Makefile`     | Build + install. |
-| `skin_examples/` | Reference skin. |
+| File             | Responsibility                                                                                                                    |
+| ---------------- | --------------------------------------------------------------------------------------------------------------------------------- |
+| `engine.c/.h`    | Device I/O, calibration math, uinput remap mirror, stats, drift watch, profiles, the background input thread.                     |
+| `ui.c`           | raylib/raygui editor, calibration/trigger/button-map modals, stats overlay & exports, daemon + standalone-viewer roles, `main()`. |
+| `skin.c/.h`      | XML skin loading and drawing.                                                                                                     |
+| `livesplit.c/.h` | LiveSplit Server listener and run-state parsing.                                                                                  |
+| `raygui.h`       | Vendored immediate-mode GUI (third-party).                                                                                        |
+| `Makefile`       | Build + install.                                                                                                                  |
+| `skin_examples/` | Reference skin.                                                                                                                   |
