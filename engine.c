@@ -800,14 +800,14 @@ static bool open_path(const char *path) {
 /* The Mayflash adapter presents one event node per port, all identical in name
    and capabilities, so the matched node order (raw readdir order) tells us
    nothing about which port actually has a controller. An empty port reports a
-   fixed power-on axis state (sticks centered, triggers/C-stick pinned), so every
-   empty port has a byte-identical resting vector while a connected controller
-   sits at its own real analog offset. Signature each node by its ABS state; the
-   most common signature is "empty", and the controller is the odd one out. Move
-   it to the front so auto-open (devidx 0) lands on the real controller. The Port
-   button still cycles through all of them. (The adapter doesn't stream events
-   while idle, so this resting-state check is more reliable than sampling for
-   activity.) */
+   fixed power-on axis state (sticks centered, triggers/C-stick pinned), so
+   every empty port has a byte-identical resting vector while a connected
+   controller sits at its own real analog offset. Signature each node by its ABS
+   state; the most common signature is "empty", and the controller is the odd
+   one out. Move it to the front so auto-open (devidx 0) lands on the real
+   controller. The Port button still cycles through all of them. (The adapter
+   doesn't stream events while idle, so this resting-state check is more
+   reliable than sampling for activity.) */
 static unsigned long abs_signature(const char *path) {
   int fd = open(path, O_RDONLY | O_NONBLOCK);
   if (fd < 0)
