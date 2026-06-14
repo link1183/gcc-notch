@@ -198,8 +198,9 @@ static run_agg compute_agg(const long *ms, const long *pr, int n) {
     }
     tmp[j + 1] = k;
   }
+  int mid = m / 2;
   a.avg = n ? (double)a.sum / n : 0;
-  a.median = m ? (double)tmp[m / 2] : 0;
+  a.median = m ? (double)tmp[mid] : 0;
   a.avg_apm = a.total_ms ? a.sum * 60000.0 / a.total_ms : 0;
   if (a.best < 0)
     a.best = 0;
@@ -342,7 +343,8 @@ static bool export_run_png(char *outpath, size_t opn, int idx1, long when,
     DrawRectangle((int)(28 * S), (int)(236 * S), IW - (int)(56 * S), (int)S,
                   LINE);
     for (int i = 0; i < nkey; i++) {
-      float x = 28 + (i % 4) * 150.0f, y = 252 + (i / 4) * 30.0f;
+      int row = i / 4, col = i % 4;
+      float x = 28 + col * 150.0f, y = 252 + row * 30.0f;
       TT(hb, eng_gc_name(i), x, y, 18, TXT);
       TT(hf, TextFormat("%ld", bykey[i]), x + 50, y, 18, DIM);
     }
@@ -604,10 +606,10 @@ static void draw_stream_view(int bg, bool show_hint) {
     const char *m1 = "No skins found.";
     const char *m2 =
         "Drop a skin folder (with skin.xml) into ~/.config/gcc-notch/skins/";
-    txt(FONTB, m1, ww / 2 - MeasureTextEx(FONTB, m1, 22, 22 / 16.0f).x / 2,
-        wh / 2 - 30, 22, TXT);
-    txt(FONT, m2, ww / 2 - MeasureTextEx(FONT, m2, 14, 14 / 16.0f).x / 2,
-        wh / 2 + 4, 14, DIM);
+    txt(FONTB, m1, ww / 2.0f - MeasureTextEx(FONTB, m1, 22, 22 / 16.0f).x / 2,
+        wh / 2.0f - 30, 22, TXT);
+    txt(FONT, m2, ww / 2.0f - MeasureTextEx(FONT, m2, 14, 14 / 16.0f).x / 2,
+        wh / 2.0f + 4, 14, DIM);
   }
 }
 
