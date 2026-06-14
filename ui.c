@@ -3,12 +3,14 @@
 #include <stdlib.h>
 #define RAYGUI_IMPLEMENTATION
 #include "engine.h"
+#include "livesplit.h"
 #include "skin.h"
 #include <math.h>
 #include <raygui.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define W 1060
@@ -121,6 +123,33 @@ static void launch_viewer_window(void) {
     execl(exe, exe, "--viewer", (char *)NULL);
     _exit(127);
   }
+}
+
+/* ---- run log (one finished speedrun per line) -------------------------- */
+static void runs_path(char *b, size_t n) {
+  const char *h = getenv("HOME");
+  snprintf(b, n, "%s/.config/gcc-notch/runs.log", h ? h : ".");
+}
+
+/* unix-time \t game-time-ms \t button-presses */
+static void append_run_log(long when, long game_ms, long presses) {
+  char p[600];
+  runs_path(p, sizeof p);
+  FILE *f = fopen(p, "a");
+  if (f) {
+    fprintf(f, "%ld\t%ld\t%ld\n", when, game_ms, presses);
+    fclose(f);
+  }
+}
+
+/* ms -> "M:SS.mmm" (or "H:MM:SS.mmm" past an hour) */
+static const char *fmt_ms(long ms) {
+  if (ms < 0)
+    ms = 0;
+  long s = ms / 1000, m = s / 60, h = m / 60;
+  if (h > 0)
+    return TextFormat("%ld:%02ld:%02ld.%03ld", h, m % 60, s % 60, ms % 1000);
+  return TextFormat("%ld:%02ld.%03ld", m, s % 60, ms % 1000);
 }
 
 /* ---- shape helpers ----------------------------------------------------- */
@@ -510,6 +539,8 @@ int main(int argc, char **argv) {
   }
 
   signal(SIGCHLD, SIG_IGN); /* reap spawned viewer windows automatically */
+  eng_stats_load();         /* control process owns the saved stats file */
+  ls_start();               /* probe dusklight's LiveSplit timer commands */
   if (auto_remap)
     eng_start_remap();
 
@@ -519,7 +550,45 @@ int main(int argc, char **argv) {
   int sk_idx = 0;
   bool sk_edit = false;
   bool name_modal = false, confirm_reset = false;
+  bool show_stats = false, confirm_stats_reset = false;
   char name_buf[64] = "";
+
+  /* run tracking, driven by dusklight's LiveSplit commands */
+#define RUN_HIST 32
+  long rh_when[RUN_HIST], rh_ms[RUN_HIST], rh_pr[RUN_HIST];
+  int rh_n = 0;                         /* runs held, newest at rh_n-1 */
+  long ls_seen_start = ls_start_seq();  /* ignore any pre-existing run */
+  long ls_seen_end = ls_end_seq();
+  long run_base = 0;     /* eng_stats_presses() snapshot at run start */
+  bool run_live = false; /* a run is currently in progress */
+  long last_pr = 0, last_ms = 0; /* most recent finished run, for display */
+
+  /* preload recent runs from the log so history survives restarts */
+  {
+    char p[600];
+    runs_path(p, sizeof p);
+    FILE *f = fopen(p, "r");
+    if (f) {
+      long w, g, pr;
+      while (fscanf(f, "%ld %ld %ld", &w, &g, &pr) == 3) {
+        if (rh_n == RUN_HIST) {
+          memmove(rh_when, rh_when + 1, (RUN_HIST - 1) * sizeof(long));
+          memmove(rh_ms, rh_ms + 1, (RUN_HIST - 1) * sizeof(long));
+          memmove(rh_pr, rh_pr + 1, (RUN_HIST - 1) * sizeof(long));
+          rh_n--;
+        }
+        rh_when[rh_n] = w;
+        rh_ms[rh_n] = g;
+        rh_pr[rh_n] = pr;
+        rh_n++;
+      }
+      fclose(f);
+      if (rh_n > 0) {
+        last_pr = rh_pr[rh_n - 1];
+        last_ms = rh_ms[rh_n - 1];
+      }
+    }
+  }
 
   /* stream-view state */
   bool stream_view = false, borderless = false;
@@ -535,6 +604,36 @@ int main(int argc, char **argv) {
 
   while (!WindowShouldClose()) {
     publish_viewer_src(); /* keep any viewer window pointed at the right device */
+
+    /* track LiveSplit run edges: snapshot presses at start, bank them at end */
+    {
+      long ss = ls_start_seq();
+      if (ss != ls_seen_start) {
+        ls_seen_start = ss;
+        run_base = eng_stats_presses();
+        run_live = true;
+      }
+      long es = ls_end_seq();
+      if (es != ls_seen_end) {
+        ls_seen_end = es;
+        if (run_live) {
+          run_live = false;
+          last_pr = eng_stats_presses() - run_base;
+          last_ms = ls_final_ms();
+          append_run_log(time(NULL), last_ms, last_pr);
+          if (rh_n == RUN_HIST) {
+            memmove(rh_when, rh_when + 1, (RUN_HIST - 1) * sizeof(long));
+            memmove(rh_ms, rh_ms + 1, (RUN_HIST - 1) * sizeof(long));
+            memmove(rh_pr, rh_pr + 1, (RUN_HIST - 1) * sizeof(long));
+            rh_n--;
+          }
+          rh_when[rh_n] = time(NULL);
+          rh_ms[rh_n] = last_ms;
+          rh_pr[rh_n] = last_pr;
+          rh_n++;
+        }
+      }
+    }
 
     /* V toggles the stream viewer in either mode */
     if (IsKeyPressed(KEY_V)) {
@@ -582,7 +681,8 @@ int main(int argc, char **argv) {
     } else {
       /* keyboard shortcuts (suppressed while a modal owns the screen) */
       bool modal = eng_cal_active() || eng_trig_active() ||
-                   eng_btnmap_active() || name_modal || confirm_reset;
+                   eng_btnmap_active() || name_modal || confirm_reset ||
+                   show_stats;
       if (!modal) {
         if (IsKeyPressed(KEY_SPACE)) {
           if (eng_remap_active())
@@ -596,6 +696,8 @@ int main(int argc, char **argv) {
           eng_trig_begin();
         if (IsKeyPressed(KEY_R))
           eng_load_cfg();
+        if (IsKeyPressed(KEY_S))
+          show_stats = true;
       }
       if (IsKeyPressed(KEY_ESCAPE)) {
         if (eng_cal_active())
@@ -608,6 +710,10 @@ int main(int argc, char **argv) {
           name_modal = false;
         else if (confirm_reset)
           confirm_reset = false;
+        else if (confirm_stats_reset)
+          confirm_stats_reset = false;
+        else if (show_stats)
+          show_stats = false;
         else
           break; /* quit */
       }
@@ -651,6 +757,18 @@ int main(int argc, char **argv) {
       evrate = (int)((ec - rate_ev) / (now - rate_t));
       rate_ev = ec;
       rate_t = now;
+    }
+
+    /* persist stats periodically, but only when something actually changed */
+    static double stats_save_t = 0;
+    static long stats_save_mark = -1;
+    if (now - stats_save_t > 10.0) {
+      long mark = eng_stats_presses() + eng_stats_events();
+      if (mark != stats_save_mark) {
+        eng_stats_save();
+        stats_save_mark = mark;
+      }
+      stats_save_t = now;
     }
     const char *perf = TextFormat("%d fps   %d ev/s", GetFPS(), evrate);
     float pwf = MeasureTextEx(FONT, perf, 13, 13 / 16.0f).x;
@@ -822,6 +940,8 @@ int main(int argc, char **argv) {
     }
     if (GuiButton((Rectangle){cp.x + 268, row3, 76, 28}, "Delete"))
       eng_profile_delete(eng_profile_current());
+    if (GuiButton((Rectangle){cp.x + 352, row3, 130, 28}, "Stats"))
+      show_stats = true;
     if (GuiButton((Rectangle){cp.x + 490, row3, 130, 28}, "Reset Cal."))
       confirm_reset = true;
 
@@ -1051,9 +1171,140 @@ int main(int argc, char **argv) {
         confirm_reset = false;
     }
 
+    /* ---- statistics overlay -------------------------------------------- */
+    if (show_stats) {
+      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
+      Rectangle box = {W / 2.0f - 320, H / 2.0f - 250, 640, 500};
+      DrawRectangleRounded(box, 0.04f, 10, PANEL);
+      DrawRectangleRoundedLinesEx(box, 0.04f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      txt(FONTB, "Input Statistics", box.x + 28, box.y + 22, 22, TXT);
+
+      time_t since = (time_t)eng_stats_since();
+      char when[64] = "—";
+      if (since > 0) {
+        struct tm *tmv = localtime(&since);
+        if (tmv)
+          strftime(when, sizeof when, "%Y-%m-%d %H:%M", tmv);
+      }
+      txt(FONT, TextFormat("since %s", when), box.x + 28, box.y + 54, 13, DIM);
+
+      /* headline totals */
+      txt(FONTB, TextFormat("%ld", eng_stats_presses()), box.x + 28,
+          box.y + 78, 30, ACCENT);
+      txt(FONT, "button presses", box.x + 28, box.y + 112, 13, DIM);
+      txt(FONTB, TextFormat("%ld", eng_stats_events()), box.x + 240,
+          box.y + 78, 30, GOOD);
+      txt(FONT, "input events", box.x + 240, box.y + 112, 13, DIM);
+
+      /* left column: per-button counts (GameCube names when mapped) */
+      section_title("Buttons", box.x + 28, box.y + 148);
+      float yy = box.y + 176;
+      if (eng_has_btnmap()) {
+        for (int i = 0; i < eng_btnmap_total(); i++) {
+          int code = eng_gc_code(i);
+          long n = code >= 0 ? eng_stats_key(code) : 0;
+          txt(FONT, eng_gc_name(i), box.x + 28, yy, 14, TXT);
+          txt(FONT, TextFormat("%ld", n), box.x + 150, yy, 14, DIM);
+          yy += 22;
+        }
+      } else {
+        int codes[64];
+        int n = eng_list_keys(codes, 64), shown = 0;
+        for (int i = 0; i < n && shown < 9; i++) {
+          long c = eng_stats_key(codes[i]);
+          if (c == 0)
+            continue;
+          txt(FONT, shortname(eng_code_name_key(codes[i])), box.x + 28, yy, 14,
+              TXT);
+          txt(FONT, TextFormat("%ld", c), box.x + 150, yy, 14, DIM);
+          yy += 22;
+          shown++;
+        }
+        if (shown == 0)
+          txt(FONT, "no presses yet", box.x + 28, yy, 13, DIM);
+      }
+
+      /* compact D-pad line under the button list */
+      section_title("D-Pad", box.x + 28, box.y + 392);
+      txt(FONT,
+          TextFormat("U %ld   D %ld   L %ld   R %ld", eng_stats_dpad_count(0),
+                     eng_stats_dpad_count(1), eng_stats_dpad_count(2),
+                     eng_stats_dpad_count(3)),
+          box.x + 28, box.y + 420, 13, DIM);
+
+      /* right column: the run tracker fed by dusklight over LiveSplit */
+      section_title("Current Run", box.x + 330, box.y + 148);
+      const char *lst = !ls_listening() ? "server off"
+                        : !ls_connected() ? "waiting for dusklight"
+                        : ls_run_active() ? "RUN ACTIVE"
+                                          : "connected (idle)";
+      Color lsc = !ls_listening()  ? BAD
+                  : !ls_connected() ? WARN
+                  : ls_run_active() ? GOOD
+                                    : DIM;
+      txt(FONT, lst, box.x + 330, box.y + 174, 13, lsc);
+
+      long live_pr = run_live ? eng_stats_presses() - run_base : last_pr;
+      long live_ms = run_live ? ls_game_ms() : last_ms;
+      double apm = live_ms > 0 ? live_pr * 60000.0 / live_ms : 0.0;
+      txt(FONTB, TextFormat("%ld", live_pr), box.x + 330, box.y + 196, 30,
+          run_live ? GOOD : (last_pr ? TXT : DIM));
+      txt(FONT, run_live ? "presses this run" : "presses (last run)",
+          box.x + 330, box.y + 230, 13, DIM);
+      txt(FONT, TextFormat("%s    %.0f apm", fmt_ms(live_ms), apm), box.x + 330,
+          box.y + 250, 13, DIM);
+
+      section_title("Recent Runs", box.x + 330, box.y + 286);
+      if (rh_n == 0) {
+        txt(FONT, "(no runs yet)", box.x + 330, box.y + 314, 13,
+            Fade(DIM, 0.7f));
+      } else {
+        long best = -1;
+        for (int i = 0; i < rh_n; i++)
+          if (best < 0 || rh_pr[i] < best)
+            best = rh_pr[i];
+        float ryy = box.y + 314;
+        for (int i = rh_n - 1; i >= 0 && i > rh_n - 7; i--) {
+          bool is_best = rh_pr[i] == best;
+          txt(FONT, fmt_ms(rh_ms[i]), box.x + 330, ryy, 13, TXT);
+          txt(FONT, TextFormat("%ld", rh_pr[i]), box.x + 470, ryy, 13,
+              is_best ? GOOD : DIM);
+          ryy += 18;
+        }
+        txt(FONT, TextFormat("best %ld presses", best), box.x + 330,
+            box.y + 314 + 6 * 18 + 4, 12, Fade(GOOD, 0.8f));
+      }
+
+      if (GuiButton((Rectangle){box.x + 28, box.y + box.height - 56, 150, 38},
+                    "Reset Stats"))
+        confirm_stats_reset = true;
+      if (GuiButton((Rectangle){box.x + 462, box.y + box.height - 56, 150, 38},
+                    "Close"))
+        show_stats = false;
+    }
+
+    /* ---- reset-statistics confirm -------------------------------------- */
+    if (confirm_stats_reset) {
+      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
+      Rectangle box = {W / 2.0f - 220, H / 2.0f - 80, 440, 160};
+      DrawRectangleRounded(box, 0.06f, 10, PANEL);
+      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(BAD, 0.6f));
+      txt(FONTB, "Reset Statistics?", box.x + 28, box.y + 22, 22, TXT);
+      txt(FONT, "This clears all collected input counts.", box.x + 28,
+          box.y + 56, 14, DIM);
+      if (GuiButton((Rectangle){box.x + 28, box.y + 104, 150, 38}, "Reset")) {
+        eng_stats_reset();
+        confirm_stats_reset = false;
+      }
+      if (GuiButton((Rectangle){box.x + 262, box.y + 104, 150, 38}, "Cancel"))
+        confirm_stats_reset = false;
+    }
+
     EndDrawing();
   }
 
+  eng_stats_save();
+  ls_stop();
   eng_io_stop();
   eng_close();
   skin_unload_all();

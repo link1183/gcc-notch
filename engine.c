@@ -108,6 +108,19 @@ static int dpad_x = -1, dpad_y = -1; /* ABS hat axes for the D-pad */
 static bool map_active; /* mapping wizard running                  */
 static int map_idx;     /* which GC button we're capturing         */
 
+/* ---------- input statistics ----------
+   collected in eng_poll() regardless of remap state; persisted globally (not
+   per-profile) and resettable from the GUI. */
+typedef struct {
+  long presses;      /* total button press edges */
+  long events;       /* EV_ABS/EV_KEY events */
+  long key[KEY_CNT]; /* per-keycode press edges */
+  long dpad[4];      /* up, down, left, right press edges */
+  time_t since;      /* wall-clock of last reset */
+} eng_stats;
+static eng_stats stats;
+static int prev_dpx, prev_dpy; /* last D-pad direction, for edge counting */
+
 static bool cal_active;
 static int cal_stick, cal_phase, cal_notch;
 static int cal_cand[2] = {-1, -1};
@@ -119,6 +132,7 @@ static int devcount, devidx;
 
 static void remap_teardown(void); /* defined with the remap controls below */
 static void btnmap_advance(void); /* defined with the mapping wizard below */
+static void detect_dpad(void);    /* defined with the button map below */
 
 /* ---------- math ---------- */
 static void canonical_target(int k, double diag, double *tx, double *ty) {
@@ -605,6 +619,98 @@ void eng_clear_cal(void) {
   eng_save_cfg();
 }
 
+/* ---------- input statistics ---------- */
+static void stats_path(char *b, size_t n) {
+  const char *h = getenv("HOME");
+  snprintf(b, n, "%s/.config/gcc-notch/stats.conf", h ? h : ".");
+}
+
+bool eng_stats_save(void) {
+  ENG_GUARD;
+  char p[256];
+  stats_path(p, sizeof p);
+  ensure_parent(p);
+  char tmppath[300];
+  snprintf(tmppath, sizeof tmppath, "%s.tmp", p);
+  FILE *f = fopen(tmppath, "w");
+  if (!f)
+    return false;
+  fprintf(f, "since %ld\n", (long)stats.since);
+  fprintf(f, "presses %ld\n", stats.presses);
+  fprintf(f, "events %ld\n", stats.events);
+  for (int i = 0; i < 4; i++)
+    fprintf(f, "dpad %d %ld\n", i, stats.dpad[i]);
+  for (int c = 0; c < KEY_CNT; c++)
+    if (stats.key[c])
+      fprintf(f, "key %d %ld\n", c, stats.key[c]);
+  fflush(f);
+  fclose(f);
+  if (rename(tmppath, p) != 0) {
+    remove(tmppath);
+    return false;
+  }
+  return true;
+}
+
+bool eng_stats_load(void) {
+  ENG_GUARD;
+  memset(&stats, 0, sizeof stats);
+  stats.since = time(NULL);
+  char p[256];
+  stats_path(p, sizeof p);
+  FILE *f = fopen(p, "r");
+  if (!f)
+    return false;
+  char a[64];
+  while (fscanf(f, "%63s", a) == 1) {
+    if (!strcmp(a, "since")) {
+      long v;
+      if (fscanf(f, "%ld", &v) == 1)
+        stats.since = (time_t)v;
+    } else if (!strcmp(a, "presses")) {
+      if (fscanf(f, "%ld", &stats.presses) != 1)
+        break;
+    } else if (!strcmp(a, "events")) {
+      if (fscanf(f, "%ld", &stats.events) != 1)
+        break;
+    } else if (!strcmp(a, "dpad")) {
+      int i;
+      long v;
+      if (fscanf(f, "%d %ld", &i, &v) == 2 && i >= 0 && i < 4)
+        stats.dpad[i] = v;
+    } else if (!strcmp(a, "key")) {
+      int c;
+      long v;
+      if (fscanf(f, "%d %ld", &c, &v) == 2 && c >= 0 && c < KEY_CNT)
+        stats.key[c] = v;
+    } else {
+      char ln[128];
+      if (fgets(ln, sizeof ln, f)) {
+      }
+    }
+  }
+  fclose(f);
+  return true;
+}
+
+void eng_stats_reset(void) {
+  ENG_GUARD;
+  memset(&stats, 0, sizeof stats);
+  prev_dpx = prev_dpy = 0;
+  stats.since = time(NULL);
+  eng_stats_save();
+}
+
+long eng_stats_presses(void) { return stats.presses; }
+long eng_stats_events(void) { return stats.events; }
+long eng_stats_key(int code) {
+  return (code >= 0 && code < KEY_CNT) ? stats.key[code] : 0;
+}
+long eng_stats_dpad_count(int dir) {
+  return (dir >= 0 && dir < 4) ? stats.dpad[dir] : 0;
+}
+long eng_stats_since(void) { return (long)stats.since; }
+
 /* ---------- device ---------- */
 static void seed_state(void) {
   for (int c = 0; c < ABS_CNT; c++)
@@ -756,6 +862,26 @@ static void try_reconnect(void) {
     eng_start_remap();
 }
 
+/* once per device frame (SYN_REPORT): count D-pad direction edges. Runs
+   whether or not remapping is active. */
+static void stats_on_frame(void) {
+  if (dpad_x < 0 && dpad_y < 0)
+    detect_dpad();
+  int vx = (dpad_x >= 0) ? cur[dpad_x] : 0;
+  int vy = (dpad_y >= 0) ? cur[dpad_y] : 0;
+  int dx = (vx > 0) - (vx < 0), dy = (vy > 0) - (vy < 0);
+  if (dy < 0 && prev_dpy >= 0)
+    stats.dpad[0]++;
+  if (dy > 0 && prev_dpy <= 0)
+    stats.dpad[1]++;
+  if (dx < 0 && prev_dpx >= 0)
+    stats.dpad[2]++;
+  if (dx > 0 && prev_dpx <= 0)
+    stats.dpad[3]++;
+  prev_dpx = dx;
+  prev_dpy = dy;
+}
+
 void eng_poll(void) {
   ENG_GUARD;
   if (!dev) {
@@ -771,6 +897,8 @@ void eng_poll(void) {
       continue;
     if (ev.type == EV_ABS) {
       ev_count++;
+      if (ev.code >= ABS_CNT || !is_stick[ev.code]) /* exclude stick motion */
+        stats.events++;
       if (ev.code < ABS_CNT)
         cur[ev.code] = ev.value;
       if (emit && ev.code < ABS_CNT && !is_stick[ev.code])
@@ -778,8 +906,14 @@ void eng_poll(void) {
                                     trig_apply(ev.code, ev.value));
     } else if (ev.type == EV_KEY) {
       ev_count++;
-      if (ev.code < KEY_CNT)
+      stats.events++;
+      if (ev.code < KEY_CNT) {
         keyst[ev.code] = ev.value;
+        if (ev.value == 1) { /* press edge (not release or autorepeat) */
+          stats.presses++;
+          stats.key[ev.code]++;
+        }
+      }
       /* mapping wizard: assign the first fresh button press to the cur step */
       if (map_active && ev.value == 1 && map_idx < GC_N) {
         bool used = false;
@@ -794,6 +928,7 @@ void eng_poll(void) {
       if (emit)
         libevdev_uinput_write_event(ui, EV_KEY, ev.code, ev.value);
     } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
+      stats_on_frame();
       if (emit)
         emit_sticks();
     } else if (ev.type != EV_SYN) {

@@ -22,6 +22,16 @@ void eng_io_stop(void);
 
 long eng_event_count(void); /* cumulative input events seen */
 
+/* input statistics (global, ~/.config/gcc-notch/stats.conf) */
+bool eng_stats_load(void);
+bool eng_stats_save(void);
+void eng_stats_reset(void);
+long eng_stats_presses(void);      /* total button press edges since reset */
+long eng_stats_events(void);       /* EV_ABS/EV_KEY events since reset */
+long eng_stats_key(int code);      /* press edges for one evdev key code */
+long eng_stats_dpad_count(int dir); /* 0=up 1=down 2=left 3=right */
+long eng_stats_since(void);         /* unix time of last reset */
+
 int eng_axis_min(void);
 int eng_axis_max(void);
 
