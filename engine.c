@@ -1,20 +1,59 @@
-#include <asm-generic/errno-base.h>
-#include <libevdev-1.0/libevdev/libevdev.h>
-#include <sys/stat.h>
 #define _GNU_SOURCE
 #include "engine.h"
 #include <dirent.h>
+#include <errno.h>
 #include <fcntl.h>
+#include <libevdev-1.0/libevdev/libevdev.h>
 #include <libevdev-1.0/libevdev/libevdev-uinput.h>
-#include <libevdev/libevdev.h>
 #include <limits.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
+#include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 #include <unistd.h>
+
+/* ---------- threading ----------
+   A background thread pumps eng_poll() so remapping survives the GUI window
+   being hidden. A single recursive mutex serializes every public entry point
+   that touches the device, the uinput mirror, or the remap tables; the guard
+   auto-unlocks on return (including early returns) via the cleanup attribute. */
+static pthread_mutex_t eng_mtx = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
+static void eng_lock(void) { pthread_mutex_lock(&eng_mtx); }
+static void eng_unlock_p(int *p) {
+  (void)p;
+  pthread_mutex_unlock(&eng_mtx);
+}
+#define ENG_GUARD                                                              \
+  __attribute__((cleanup(eng_unlock_p))) int _eng_guard                        \
+      __attribute__((unused)) = (eng_lock(), 0)
+
+static pthread_t io_th;
+static volatile bool io_running;
+static void *io_loop(void *arg) {
+  (void)arg;
+  while (io_running) {
+    eng_poll();
+    usleep(500);
+  }
+  return NULL;
+}
+void eng_io_start(void) {
+  if (io_running)
+    return;
+  io_running = true;
+  if (pthread_create(&io_th, NULL, io_loop, NULL) != 0)
+    io_running = false;
+}
+void eng_io_stop(void) {
+  if (!io_running)
+    return;
+  io_running = false;
+  pthread_join(io_th, NULL);
+}
 
 #define OUT_CENTER 128.0
 #define OUT_R 127.0
@@ -262,7 +301,9 @@ static void ensure_parent(const char *p) {
 
 static bool save_to(const char *p) {
   ensure_parent(p);
-  FILE *f = fopen(p, "w");
+  char tmppath[300];
+  snprintf(tmppath, sizeof tmppath, "%s.tmp", p);
+  FILE *f = fopen(tmppath, "w");
   if (!f)
     return false;
   const char *nm[2] = {"control", "cstick"};
@@ -285,7 +326,12 @@ static bool save_to(const char *p) {
       fprintf(f, "gcbtn %d %d\n", i, gc_btn[i]);
   if (dpad_x >= 0 || dpad_y >= 0)
     fprintf(f, "dpad %d %d\n", dpad_x, dpad_y);
+  fflush(f);
   fclose(f);
+  if (rename(tmppath, p) != 0) {
+    remove(tmppath);
+    return false;
+  }
   return true;
 }
 
@@ -482,12 +528,14 @@ static void write_active(void) {
 }
 
 bool eng_save_cfg(void) {
+  ENG_GUARD;
   char p[256];
   profile_path(cur_profile, p, sizeof p);
   return save_to(p);
 }
 
 bool eng_load_cfg(void) {
+  ENG_GUARD;
   migrate_legacy();
   read_active();
   char p[256];
@@ -507,6 +555,7 @@ const char *eng_profile_name(int i) {
 const char *eng_profile_current(void) { return cur_profile; }
 
 bool eng_profile_select(const char *name) {
+  ENG_GUARD;
   char p[256];
   profile_path(name, p, sizeof p);
   FILE *t = fopen(p, "r");
@@ -520,6 +569,7 @@ bool eng_profile_select(const char *name) {
 }
 
 bool eng_profile_save_as(const char *name) {
+  ENG_GUARD;
   char p[256];
   profile_path(name, p, sizeof p);
   if (!save_to(p))
@@ -530,6 +580,7 @@ bool eng_profile_save_as(const char *name) {
 }
 
 void eng_profile_delete(const char *name) {
+  ENG_GUARD;
   char p[256];
   profile_path(name, p, sizeof p);
   remove(p);
@@ -543,6 +594,7 @@ void eng_profile_delete(const char *name) {
 }
 
 void eng_clear_cal(void) {
+  ENG_GUARD;
   have_cal = false;
   have_trig = false;
   for (int c = 0; c < ABS_CNT; c++)
@@ -606,7 +658,7 @@ static void scan_devices(void) {
       const char *nm = libevdev_get_name(d);
       if (nm && strcmp(nm, DEV_NAME) == 0 &&
           libevdev_has_event_code(d, EV_ABS, ABS_X))
-        snprintf(devpaths[devcount++], 286, "%s", path);
+        snprintf(devpaths[devcount++], sizeof devpaths[0], "%s", path);
       libevdev_free(d);
     }
     close(fd);
@@ -614,6 +666,7 @@ static void scan_devices(void) {
   closedir(dd);
 }
 bool eng_open(const char *path) {
+  ENG_GUARD;
   /* sensible defaults so the viewer shows something before calibration */
   cal[0].ax = 0;
   cal[0].ay = 1;
@@ -631,6 +684,7 @@ bool eng_open(const char *path) {
   return open_path(devpaths[devidx]);
 }
 void eng_close(void) {
+  ENG_GUARD;
   eng_stop_remap();
   if (dev) {
     libevdev_free(dev);
@@ -653,6 +707,7 @@ const char *eng_dev_path(void) {
 }
 
 void eng_dev_next(void) {
+  ENG_GUARD;
   if (devcount < 2)
     return;
   remap_teardown(); /* keep remap intent across the port switch */
@@ -702,6 +757,7 @@ static void try_reconnect(void) {
 }
 
 void eng_poll(void) {
+  ENG_GUARD;
   if (!dev) {
     try_reconnect();
     if (!dev)
@@ -774,16 +830,19 @@ bool eng_has_cal(void) { return have_cal; }
 const eng_stick_cal *eng_cal(int s) { return &cal[s]; }
 
 void eng_measured_vec(int s, int i, double *vx, double *vy) {
+  ENG_GUARD;
   *vx = map[s].vx[i];
   *vy = map[s].vy[i];
 }
 
 void eng_ideal_vec(int s, int i, double *wx, double *wy) {
+  ENG_GUARD;
   *wx = map[s].wx[i];
   *wy = map[s].wy[i];
 }
 
 void eng_remap_point(int s, int rx, int ry, int *ox, int *oy) {
+  ENG_GUARD;
   remap(&map[s], rx, ry, ox, oy);
 }
 
@@ -794,6 +853,7 @@ bool eng_key(int code) {
 }
 
 int eng_list_keys(int *codes, int max) {
+  ENG_GUARD;
   if (!dev)
     return 0;
   int n = 0;
@@ -804,6 +864,7 @@ int eng_list_keys(int *codes, int max) {
 }
 
 int eng_list_extra_abs(int *codes, int max) {
+  ENG_GUARD;
   if (!dev)
     return 0;
   int n = 0;
@@ -823,13 +884,20 @@ const char *eng_code_name_abs(int c) {
   return s ? s : "?";
 }
 
-int eng_abs_min(int c) { return dev ? libevdev_get_abs_minimum(dev, c) : 0; }
+int eng_abs_min(int c) {
+  ENG_GUARD;
+  return dev ? libevdev_get_abs_minimum(dev, c) : 0;
+}
 
-int eng_abs_max(int c) { return dev ? libevdev_get_abs_maximum(dev, c) : 255; }
+int eng_abs_max(int c) {
+  ENG_GUARD;
+  return dev ? libevdev_get_abs_maximum(dev, c) : 255;
+}
 
 bool eng_remap_active(void) { return remapping; }
 
 const char *eng_remap_devnode(void) {
+  ENG_GUARD;
   return (remapping && ui) ? libevdev_uinput_get_devnode(ui) : NULL;
 }
 
@@ -844,6 +912,7 @@ static void remap_teardown(void) {
   remapping = false;
 }
 bool eng_start_remap(void) {
+  ENG_GUARD;
   if (!have_cal)
     return false;
   want_remap = true; /* intent persists even if the device isn't ready yet */
@@ -864,6 +933,7 @@ bool eng_start_remap(void) {
 }
 
 void eng_stop_remap(void) {
+  ENG_GUARD;
   want_remap = false; /* explicit user stop */
   remap_teardown();
 }
@@ -871,6 +941,7 @@ void eng_stop_remap(void) {
 double eng_get_diag(int s) { return diag_frac[s & 1]; }
 
 void eng_set_diag(int s, double d) {
+  ENG_GUARD;
   diag_frac[s & 1] = d;
   if (have_cal)
     rebuild_maps();
@@ -908,6 +979,7 @@ int eng_cal_notch(void) { return cal_notch; }
 void eng_cal_cancel(void) { cal_active = false; }
 
 void eng_cal_advance(void) {
+  ENG_GUARD;
   if (!cal_active)
     return;
   eng_stick_cal *t = &tmp[cal_stick];
@@ -992,6 +1064,7 @@ int eng_trig_phase(void) { return trig_phase; }
 void eng_trig_cancel(void) { trig_active = false; }
 
 void eng_trig_advance(void) {
+  ENG_GUARD;
   if (!trig_active)
     return;
   if (trig_phase == 0) {

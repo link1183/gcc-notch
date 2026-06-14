@@ -388,7 +388,6 @@ static void run_viewer_loop(void) {
   char cur_src[300] = "";
   double last_chk = 0, enter = GetTime();
   while (!WindowShouldClose()) {
-    eng_poll();
     if (GetTime() - last_chk > 0.25) { /* follow the published input device */
       last_chk = GetTime();
       char src[300];
@@ -498,11 +497,13 @@ int main(int argc, char **argv) {
 
   eng_load_cfg();
   eng_open(devpath);
+  eng_io_start(); /* poll/remap on a background thread, immune to render stalls */
   skin_load_all();
 
   /* standalone viewer process: just the overlay, driven by the control app */
   if (viewer_proc) {
     run_viewer_loop();
+    eng_io_stop();
     eng_close();
     CloseWindow();
     return 0;
@@ -533,7 +534,6 @@ int main(int argc, char **argv) {
   double stream_enter = GetTime();
 
   while (!WindowShouldClose()) {
-    eng_poll();
     publish_viewer_src(); /* keep any viewer window pointed at the right device */
 
     /* V toggles the stream viewer in either mode */
@@ -730,7 +730,7 @@ int main(int argc, char **argv) {
           DrawRectangleRoundedLinesEx(led, 0.35f, 4, 1.0f, LINE);
         txt(FONT, shortname(eng_code_name_key(codes[i])), bx + 22, by - 1, 13,
             on ? TXT : DIM);
-        bx += 22;
+        by += 22;
         if (by > bpanel.y + bpanel.height - 24) {
           col++;
           by = (int)bpanel.y + 44;
@@ -949,21 +949,21 @@ int main(int argc, char **argv) {
       /* live readout of each analog axis */
       int ac2[16];
       int m2 = eng_list_extra_abs(ac2, 16);
-      float ly = box.y + 138;
+      float ay = box.y + 138;
       for (int k = 0; k < m2; k++) {
         int code = ac2[k], lo = eng_abs_min(code), hi = eng_abs_max(code);
         if (hi - lo < 16)
           continue;
         float f = (float)(eng_raw(code) - lo) / (hi - lo);
-        txt(FONT, shortname(eng_code_name_abs(code)), box.x + 28, ly, 13, DIM);
-        Rectangle bar = {box.x + 150, ly + 1, 220, 10};
+        txt(FONT, shortname(eng_code_name_abs(code)), box.x + 28, ay, 13, DIM);
+        Rectangle bar = {box.x + 150, ay + 1, 220, 10};
         DrawRectangleRounded(bar, 1.0f, 6, PANEL2);
         if (f > 0.001f)
           DrawRectangleRounded(
               (Rectangle){bar.x, bar.y, bar.width * f, bar.height}, 1.0f, 6,
               ACCENT);
-        ly += 20;
-        if (ly > box.y + 188)
+        ay += 20;
+        if (ay > box.y + 188)
           break;
       }
 
@@ -1054,6 +1054,7 @@ int main(int argc, char **argv) {
     EndDrawing();
   }
 
+  eng_io_stop();
   eng_close();
   skin_unload_all();
   CloseWindow();

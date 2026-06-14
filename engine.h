@@ -13,6 +13,13 @@ bool eng_open(const char *path); /* path or NULL to auto-find */
 void eng_close(void);
 void eng_poll(void); /* drain events; emit remapped output if active */
 bool eng_connected(void);
+
+/* background input thread: pumps eng_poll() independent of any render loop so
+   remapping keeps running when the GUI window is hidden/occluded (Wayland
+   compositors throttle frame callbacks for off-screen windows). */
+void eng_io_start(void);
+void eng_io_stop(void);
+
 long eng_event_count(void); /* cumulative input events seen */
 
 int eng_axis_min(void);
