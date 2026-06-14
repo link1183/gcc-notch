@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Version=1.0
+Name=GCC Notch
+GenericName=GameCube Controller Calibration
+Comment=Recalibrate and remap worn GameCube controller sticks, with speedrun stats
+Exec=gcc-notch-ui
+Icon=gcc-notch-ui
+Terminal=false
+Categories=Utility;
+Keywords=gamecube;controller;calibration;remap;notch;speedrun;livesplit;
