@@ -48,7 +48,7 @@ It targets the device that identifies itself as
   every game sees clean values without per-game configuration.
 - **Rescales analog triggers** so a calibrated rest-to-full squeeze spans the
   full output range, with an adjustable bottom deadzone.
-- **Visualises the sticks live** — raw vs. remapped dots, the measured notch
+- **Visualises the sticks live** - raw vs. remapped dots, the measured notch
   polygon, the ideal octagon, and a fading input trail.
 - **Watches for drift.** During normal use it passively compares live behaviour
   against the saved calibration and nudges you to recalibrate once a stick wears
@@ -108,7 +108,7 @@ Dependencies (development headers):
 
 - `gcc`, `make`, `pkg-config`
 - [`libevdev`](https://www.freedesktop.org/wiki/Software/libevdev/)
-- [`raylib`](https://www.raylib.com/) (5.x) — bundles `raygui.h` is vendored
+- [`raylib`](https://www.raylib.com/) (5.x) - bundles `raygui.h` is vendored
 - `libxml-2.0`
 - a C math library + pthreads (linked automatically)
 
@@ -230,10 +230,10 @@ Press **Calibrate Sticks** (or `C`). For the control stick, then the C-stick:
 
 1. **Spin** the stick around its full gate so the tool can discover which two
    axes move (it picks the two with the largest travel).
-2. **Orient** — push and hold fully _right_ so it can tell the X axis from the Y
+2. **Orient** - push and hold fully _right_ so it can tell the X axis from the Y
    axis and their sign.
-3. **Centre** — let the stick rest, then capture the resting position.
-4. **Notches** — hold each of the eight gate notches in turn (8 captures).
+3. **Centre** - let the stick rest, then capture the resting position.
+4. **Notches** - hold each of the eight gate notches in turn (8 captures).
 
 From those samples it sorts the notches by angle, matches them to the canonical
 octagon directions, and builds a per-sector affine map. The map is rebuilt and
@@ -292,10 +292,10 @@ Calibration lives in named profiles under `profiles/<name>.conf`; the selected
 one is remembered in `active`. From the editor's Controls panel you can:
 
 - pick a profile from the dropdown (selecting one loads it),
-- **New** — save the current calibration under a new name,
-- **Delete** — remove a profile,
-- **Reload cfg** (`R`) — re-read the active profile from disk,
-- **Reset Cal.** — wipe calibration in the active profile.
+- **New** - save the current calibration under a new name,
+- **Delete** - remove a profile,
+- **Reload cfg** (`R`) - re-read the active profile from disk,
+- **Reset Cal.** - wipe calibration in the active profile.
 
 A legacy single-file `calib.conf` is migrated into `profiles/default.conf` once,
 automatically, the first time no profiles exist.
@@ -304,8 +304,8 @@ automatically, the first time no profiles exist.
 
 ## Stream viewer & skins
 
-The viewer renders a skin — a background plus overlay images that light up or
-move with live input — scaled and centred to the window.
+The viewer renders a skin - a background plus overlay images that light up or
+move with live input - scaled and centred to the window.
 
 Two ways to run it:
 
@@ -361,7 +361,7 @@ Element reference:
 Up to 32 skins with 64 elements each are loaded; only skins with a valid
 background are kept. The selection persists in the `skin` file. A working
 reference skin ("Tron V2 with D-Pad") is included under `skin_examples/` (not
-tracked in git) — copy it into the skins directory to try it.
+tracked in git) - copy it into the skins directory to try it.
 
 ---
 
@@ -377,9 +377,9 @@ Per-run tracking is driven by **dusklight's LiveSplit integration**. The program
 listens as a LiveSplit Server on `127.0.0.1:16834` and interprets the commands
 dusklight pushes:
 
-- `starttimer` — begins a run (snapshots the press counters),
-- `setgametime H:MM:SS.mmm` — the authoritative live game time,
-- run **end** — inferred when the `setgametime` stream goes quiet (~2 s) or the
+- `starttimer` - begins a run (snapshots the press counters),
+- `setgametime H:MM:SS.mmm` - the authoritative live game time,
+- run **end** - inferred when the `setgametime` stream goes quiet (~2 s) or the
   next `starttimer` arrives (there is no explicit stop command).
 
 On each finished run the press delta and final game time are banked, appended to
@@ -392,10 +392,10 @@ start so history survives restarts).
 
 From the Stats overlay:
 
-- **Export CSV** — a full report: summary header comments plus one row per run.
-- **Run CSV** — the selected run as a single row, plus a per-button breakdown for
+- **Export CSV** - a full report: summary header comments plus one row per run.
+- **Run CSV** - the selected run as a single row, plus a per-button breakdown for
   the just-finished run.
-- **Run PNG** — a shareable, supersampled result card for the selected run
+- **Run PNG** - a shareable, supersampled result card for the selected run
   (rendered with high-res fonts outside the normal draw pass for crisp text).
 
 All exports land in the config directory, named by timestamp.
