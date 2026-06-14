@@ -152,6 +152,185 @@ static const char *fmt_ms(long ms) {
   return TextFormat("%ld:%02ld.%03ld", m, s % 60, ms % 1000);
 }
 
+/* derived figures over a set of finished runs */
+typedef struct {
+  int n;
+  long best, worst, sum, total_ms;
+  double avg, median, avg_apm, best_apm;
+} run_agg;
+
+static run_agg compute_agg(const long *ms, const long *pr, int n) {
+  run_agg a = {0};
+  a.n = n;
+  a.best = a.worst = -1;
+  for (int i = 0; i < n; i++) {
+    if (a.best < 0 || pr[i] < a.best)
+      a.best = pr[i];
+    if (a.worst < 0 || pr[i] > a.worst)
+      a.worst = pr[i];
+    a.sum += pr[i];
+    a.total_ms += ms[i];
+    double rapm = ms[i] ? pr[i] * 60000.0 / ms[i] : 0;
+    if (rapm > a.best_apm)
+      a.best_apm = rapm;
+  }
+  long tmp[256] = {0};
+  int m = n < 256 ? n : 256;
+  for (int i = 0; i < m; i++)
+    tmp[i] = pr[i];
+  for (int i = 1; i < m; i++) { /* insertion sort for the median */
+    long k = tmp[i];
+    int j = i - 1;
+    while (j >= 0 && tmp[j] > k) {
+      tmp[j + 1] = tmp[j];
+      j--;
+    }
+    tmp[j + 1] = k;
+  }
+  a.avg = n ? (double)a.sum / n : 0;
+  a.median = m ? (double)tmp[m / 2] : 0;
+  a.avg_apm = a.total_ms ? a.sum * 60000.0 / a.total_ms : 0;
+  if (a.best < 0)
+    a.best = 0;
+  if (a.worst < 0)
+    a.worst = 0;
+  return a;
+}
+
+/* write a full CSV report (summary comments + per-run rows) to a timestamped
+   file; returns the path written via outpath */
+static bool export_stats_csv(char *outpath, size_t opn, const long *rh_when,
+                             const long *rh_ms, const long *rh_pr, int rh_n) {
+  const char *h = getenv("HOME");
+  time_t now = time(NULL);
+  struct tm *tv = localtime(&now);
+  char ts[32] = "export";
+  if (tv)
+    strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", tv);
+  snprintf(outpath, opn, "%s/.config/gcc-notch/stats-%s.csv", h ? h : ".", ts);
+  FILE *f = fopen(outpath, "w");
+  if (!f)
+    return false;
+
+  run_agg a = compute_agg(rh_ms, rh_pr, rh_n);
+  fprintf(f, "# gcc-notch input stats export\n");
+  fprintf(f, "# generated,%ld\n", (long)now);
+  fprintf(f, "# lifetime_button_presses,%ld\n", eng_stats_presses());
+  fprintf(f, "# lifetime_input_events,%ld\n", eng_stats_events());
+  fprintf(f, "# dpad_up,%ld\n# dpad_down,%ld\n# dpad_left,%ld\n# dpad_right,%ld\n",
+          eng_stats_dpad_count(0), eng_stats_dpad_count(1),
+          eng_stats_dpad_count(2), eng_stats_dpad_count(3));
+  fprintf(f, "# runs,%d\n# best_presses,%ld\n# worst_presses,%ld\n", a.n, a.best,
+          a.worst);
+  fprintf(f, "# avg_presses,%.1f\n# median_presses,%.0f\n", a.avg, a.median);
+  fprintf(f, "# total_run_time_ms,%ld\n# avg_apm,%.1f\n# best_apm,%.1f\n",
+          a.total_ms, a.avg_apm, a.best_apm);
+  if (eng_has_btnmap())
+    for (int i = 0; i < eng_btnmap_total(); i++) {
+      int code = eng_gc_code(i);
+      fprintf(f, "# button_%s,%ld\n", eng_gc_name(i),
+              code >= 0 ? eng_stats_key(code) : 0);
+    }
+  fprintf(f, "run,datetime,game_time,game_ms,presses,apm\n");
+  for (int i = 0; i < rh_n; i++) {
+    char dt[32] = "";
+    time_t w = (time_t)rh_when[i];
+    struct tm *rt = localtime(&w);
+    if (rt)
+      strftime(dt, sizeof dt, "%Y-%m-%d %H:%M:%S", rt);
+    double rapm = rh_ms[i] ? rh_pr[i] * 60000.0 / rh_ms[i] : 0;
+    fprintf(f, "%d,%s,%s,%ld,%ld,%.1f\n", i + 1, dt, fmt_ms(rh_ms[i]), rh_ms[i],
+            rh_pr[i], rapm);
+  }
+  fclose(f);
+  return true;
+}
+
+/* path for a single run's export, named by its timestamp */
+static void run_export_path(char *b, size_t n, const char *ext, long when) {
+  const char *h = getenv("HOME");
+  time_t w = (time_t)when;
+  struct tm *tv = localtime(&w);
+  char ts[32] = "run";
+  if (tv)
+    strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", tv);
+  snprintf(b, n, "%s/.config/gcc-notch/run-%s.%s", h ? h : ".", ts, ext);
+}
+
+/* one run -> CSV (single row, plus a per-button section when available) */
+static bool export_run_csv(char *outpath, size_t opn, int idx1, long when,
+                           long ms, long pr, const long *bykey, int nkey) {
+  run_export_path(outpath, opn, "csv", when);
+  FILE *f = fopen(outpath, "w");
+  if (!f)
+    return false;
+  char dt[32] = "";
+  time_t w = (time_t)when;
+  struct tm *tv = localtime(&w);
+  if (tv)
+    strftime(dt, sizeof dt, "%Y-%m-%d %H:%M:%S", tv);
+  double apm = ms ? pr * 60000.0 / ms : 0;
+  fprintf(f, "run,datetime,game_time,game_ms,presses,apm\n");
+  fprintf(f, "%d,%s,%s,%ld,%ld,%.1f\n", idx1, dt, fmt_ms(ms), ms, pr, apm);
+  if (bykey) {
+    fprintf(f, "\nbutton,presses\n");
+    for (int i = 0; i < nkey; i++)
+      fprintf(f, "%s,%ld\n", eng_gc_name(i), bykey[i]);
+  }
+  fclose(f);
+  return true;
+}
+
+/* one run -> a shareable PNG result card. Must run OUTSIDE BeginDrawing(). */
+static bool export_run_png(char *outpath, size_t opn, int idx1, long when,
+                           long ms, long pr, const long *bykey, int nkey) {
+  run_export_path(outpath, opn, "png", when);
+  int IW = 640, IH = bykey ? 392 : 248;
+  RenderTexture2D rt = LoadRenderTexture(IW, IH);
+  BeginTextureMode(rt);
+  ClearBackground((Color){18, 20, 28, 255});
+  DrawRectangle(0, 0, IW, 4, ACCENT);
+  DrawRectangleLinesEx((Rectangle){0, 0, (float)IW, (float)IH}, 1, LINE);
+
+  char dt[32] = "";
+  time_t w = (time_t)when;
+  struct tm *tv = localtime(&w);
+  if (tv)
+    strftime(dt, sizeof dt, "%Y-%m-%d %H:%M", tv);
+  double apm = ms ? pr * 60000.0 / ms : 0;
+
+  DrawTextEx(FONTB, TextFormat("Run #%d", idx1), (Vector2){28, 24}, 30,
+             30 / 16.0f, TXT);
+  DrawTextEx(FONT, dt, (Vector2){28, 62}, 16, 16 / 16.0f, DIM);
+  DrawTextEx(FONTB, fmt_ms(ms), (Vector2){28, 92}, 56, 56 / 16.0f, GOOD);
+  DrawTextEx(FONTB, TextFormat("%ld", pr), (Vector2){28, 168}, 30, 30 / 16.0f,
+             ACCENT);
+  DrawTextEx(FONT, "presses", (Vector2){28, 202}, 16, 16 / 16.0f, DIM);
+  DrawTextEx(FONTB, TextFormat("%.0f", apm), (Vector2){240, 168}, 30,
+             30 / 16.0f, TXT);
+  DrawTextEx(FONT, "apm", (Vector2){240, 202}, 16, 16 / 16.0f, DIM);
+
+  if (bykey) {
+    DrawRectangle(28, 236, IW - 56, 1, LINE);
+    for (int i = 0; i < nkey; i++) {
+      float x = 28 + (i % 4) * 150.0f, y = 252 + (i / 4) * 30.0f;
+      DrawTextEx(FONTB, eng_gc_name(i), (Vector2){x, y}, 18, 18 / 16.0f, TXT);
+      DrawTextEx(FONT, TextFormat("%ld", bykey[i]), (Vector2){x + 50, y}, 18,
+                 18 / 16.0f, DIM);
+    }
+  }
+  DrawTextEx(FONT, "gcc-notch", (Vector2){IW - 104, IH - 26}, 14, 14 / 16.0f,
+             Fade(DIM, 0.6f));
+  EndTextureMode();
+
+  Image img = LoadImageFromTexture(rt.texture);
+  ImageFlipVertical(&img); /* render textures read back upside-down */
+  bool ok = ExportImage(img, outpath);
+  UnloadImage(img);
+  UnloadRenderTexture(rt);
+  return ok;
+}
+
 /* ---- shape helpers ----------------------------------------------------- */
 static void card(Rectangle r) {
   DrawRectangleRounded(r, 0.045f, 8, PANEL);
@@ -554,7 +733,7 @@ int main(int argc, char **argv) {
   char name_buf[64] = "";
 
   /* run tracking, driven by dusklight's LiveSplit commands */
-#define RUN_HIST 32
+#define RUN_HIST 200
   long rh_when[RUN_HIST], rh_ms[RUN_HIST], rh_pr[RUN_HIST];
   int rh_n = 0;                         /* runs held, newest at rh_n-1 */
   long ls_seen_start = ls_start_seq();  /* ignore any pre-existing run */
@@ -562,6 +741,31 @@ int main(int argc, char **argv) {
   long run_base = 0;     /* eng_stats_presses() snapshot at run start */
   bool run_live = false; /* a run is currently in progress */
   long last_pr = 0, last_ms = 0; /* most recent finished run, for display */
+
+  /* per-GameCube-button snapshot, for the per-run breakdown */
+  long run_base_key[16] = {0}; /* per-button presses at run start */
+  long last_key[16] = {0};     /* per-button presses of the last run */
+
+  /* rolling-window APM and its per-run peak */
+#define APM_N 512
+#define APM_WINDOW 3.0 /* seconds */
+  double apm_t[APM_N] = {0};
+  long apm_c[APM_N] = {0};
+  int apm_head = 0, apm_cnt = 0;
+  long apm_prev = eng_stats_presses(); /* presses seen last frame */
+  double cur_apm = 0, run_peak_apm = 0, last_peak_apm = 0;
+
+  /* export feedback toast */
+  char export_msg[300] = "";
+  double export_msg_t = 0;
+
+  /* per-run export: which run is selected, and a deferred PNG request (the
+     render-texture work must happen outside BeginDrawing) */
+  int sel_run = -1; /* index into rh_*, -1 = most recent */
+  bool png_pending = false;
+  int png_idx = 0;
+  long png_when = 0, png_ms = 0, png_pr = 0, png_key[16] = {0};
+  bool png_haskey = false;
 
   /* preload recent runs from the log so history survives restarts */
   {
@@ -612,6 +816,11 @@ int main(int argc, char **argv) {
         ls_seen_start = ss;
         run_base = eng_stats_presses();
         run_live = true;
+        run_peak_apm = 0;
+        for (int i = 0; i < eng_btnmap_total() && i < 16; i++) {
+          int code = eng_gc_code(i);
+          run_base_key[i] = code >= 0 ? eng_stats_key(code) : 0;
+        }
       }
       long es = ls_end_seq();
       if (es != ls_seen_end) {
@@ -620,6 +829,11 @@ int main(int argc, char **argv) {
           run_live = false;
           last_pr = eng_stats_presses() - run_base;
           last_ms = ls_final_ms();
+          last_peak_apm = run_peak_apm;
+          for (int i = 0; i < eng_btnmap_total() && i < 16; i++) {
+            int code = eng_gc_code(i);
+            last_key[i] = (code >= 0 ? eng_stats_key(code) : 0) - run_base_key[i];
+          }
           append_run_log(time(NULL), last_ms, last_pr);
           if (rh_n == RUN_HIST) {
             memmove(rh_when, rh_when + 1, (RUN_HIST - 1) * sizeof(long));
@@ -633,6 +847,32 @@ int main(int argc, char **argv) {
           rh_n++;
         }
       }
+    }
+
+    /* rolling-window APM: bin each frame's press burst, sum the trailing
+       window, and remember the peak reached during the current run */
+    {
+      long pnow = eng_stats_presses();
+      long d = pnow - apm_prev;
+      apm_prev = pnow;
+      double t = GetTime();
+      if (d > 0) {
+        apm_t[apm_head] = t;
+        apm_c[apm_head] = d;
+        apm_head = (apm_head + 1) % APM_N;
+        if (apm_cnt < APM_N)
+          apm_cnt++;
+      }
+      long wc = 0;
+      for (int k = 0; k < apm_cnt; k++) {
+        int idx = (apm_head - 1 - k + APM_N) % APM_N;
+        if (t - apm_t[idx] > APM_WINDOW)
+          break; /* samples are time-ordered, newest first */
+        wc += apm_c[idx];
+      }
+      cur_apm = wc * 60.0 / APM_WINDOW;
+      if (run_live && cur_apm > run_peak_apm)
+        run_peak_apm = cur_apm;
     }
 
     /* V toggles the stream viewer in either mode */
@@ -815,13 +1055,13 @@ int main(int argc, char **argv) {
     Rectangle bpanel = {684, 84, W - 684 - 28, 300};
     card(bpanel);
     int colw = (int)(bpanel.width - 32) / 2;
-    int bx = (int)bpanel.x + 16, by = (int)bpanel.y + 44, col = 0;
+    int bcx = (int)bpanel.x + 16, bcy = (int)bpanel.y + 44, col = 0;
     if (eng_has_btnmap()) {
       /* show the mapped GameCube buttons by name, lit from the stored map */
       int total = eng_btnmap_total();
       for (int i = 0; i < total; i++) {
         bool mapped = eng_gc_mapped(i), on = eng_gc_pressed(i);
-        Rectangle led = {(float)bx, (float)by, 14, 14};
+        Rectangle led = {(float)bcx, (float)bcy, 14, 14};
         DrawRectangleRounded(led, 0.35f, 4, on ? GOOD : PANEL2);
         if (!on)
           DrawRectangleRoundedLinesEx(led, 0.35f, 4, 1.0f, LINE);
@@ -829,12 +1069,12 @@ int main(int argc, char **argv) {
             mapped ? TextFormat("%-6s %s", eng_gc_name(i),
                                 shortname(eng_code_name_key(eng_gc_code(i))))
                    : TextFormat("%s  (unmapped)", eng_gc_name(i)),
-            bx + 22, by - 1, 13, on ? TXT : (mapped ? DIM : Fade(DIM, 0.5f)));
-        by += 22;
-        if (by > bpanel.y + bpanel.height - 24) {
+            bcx + 22, bcy - 1, 13, on ? TXT : (mapped ? DIM : Fade(DIM, 0.5f)));
+        bcy += 22;
+        if (bcy > bpanel.y + bpanel.height - 24) {
           col++;
-          by = (int)bpanel.y + 44;
-          bx = (int)bpanel.x + 16 + col * colw;
+          bcy = (int)bpanel.y + 44;
+          bcx = (int)bpanel.x + 16 + col * colw;
         }
       }
     } else {
@@ -842,17 +1082,17 @@ int main(int argc, char **argv) {
       int n = eng_list_keys(codes, 64);
       for (int i = 0; i < n; i++) {
         bool on = eng_key(codes[i]);
-        Rectangle led = {(float)bx, (float)by, 14, 14};
+        Rectangle led = {(float)bcx, (float)bcy, 14, 14};
         DrawRectangleRounded(led, 0.35f, 4, on ? GOOD : PANEL2);
         if (!on)
           DrawRectangleRoundedLinesEx(led, 0.35f, 4, 1.0f, LINE);
-        txt(FONT, shortname(eng_code_name_key(codes[i])), bx + 22, by - 1, 13,
+        txt(FONT, shortname(eng_code_name_key(codes[i])), bcx + 22, bcy - 1, 13,
             on ? TXT : DIM);
-        by += 22;
-        if (by > bpanel.y + bpanel.height - 24) {
+        bcy += 22;
+        if (bcy > bpanel.y + bpanel.height - 24) {
           col++;
-          by = (int)bpanel.y + 44;
-          bx = (int)bpanel.x + 16 + col * colw;
+          bcy = (int)bpanel.y + 44;
+          bcx = (int)bpanel.x + 16 + col * colw;
         }
       }
     }
@@ -1174,67 +1414,82 @@ int main(int argc, char **argv) {
     /* ---- statistics overlay -------------------------------------------- */
     if (show_stats) {
       DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
-      Rectangle box = {W / 2.0f - 320, H / 2.0f - 250, 640, 500};
-      DrawRectangleRounded(box, 0.04f, 10, PANEL);
-      DrawRectangleRoundedLinesEx(box, 0.04f, 10, 1.0f, Fade(ACCENT, 0.6f));
-      txt(FONTB, "Input Statistics", box.x + 28, box.y + 22, 22, TXT);
+      Rectangle box = {W / 2.0f - 350, H / 2.0f - 280, 700, 560};
+      DrawRectangleRounded(box, 0.03f, 10, PANEL);
+      DrawRectangleRoundedLinesEx(box, 0.03f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      float bx = box.x, by = box.y;
+      float colA = bx + 28, colB = bx + 252, colC = bx + 480;
 
+      run_agg ag = compute_agg(rh_ms, rh_pr, rh_n);
+      long life = eng_stats_presses();
+
+      txt(FONTB, "Input Statistics", colA, by + 18, 22, TXT);
       time_t since = (time_t)eng_stats_since();
-      char when[64] = "—";
+      char when[64] = "all time";
       if (since > 0) {
         struct tm *tmv = localtime(&since);
         if (tmv)
-          strftime(when, sizeof when, "%Y-%m-%d %H:%M", tmv);
+          strftime(when, sizeof when, "since %Y-%m-%d %H:%M", tmv);
       }
-      txt(FONT, TextFormat("since %s", when), box.x + 28, box.y + 54, 13, DIM);
+      txt(FONT, when, colA + 200, by + 26, 13, DIM);
 
-      /* headline totals */
-      txt(FONTB, TextFormat("%ld", eng_stats_presses()), box.x + 28,
-          box.y + 78, 30, ACCENT);
-      txt(FONT, "button presses", box.x + 28, box.y + 112, 13, DIM);
-      txt(FONTB, TextFormat("%ld", eng_stats_events()), box.x + 240,
-          box.y + 78, 30, GOOD);
-      txt(FONT, "input events", box.x + 240, box.y + 112, 13, DIM);
+      /* headline tiles */
+      struct {
+        const char *v, *l;
+        Color c;
+      } tile[4] = {
+          {TextFormat("%ld", life), "button presses", ACCENT},
+          {TextFormat("%ld", eng_stats_events()), "input events", GOOD},
+          {TextFormat("%d", ag.n), "runs logged", TXT},
+          {fmt_ms(ag.total_ms), "total run time", TXT},
+      };
+      float tx[4] = {bx + 28, bx + 196, bx + 364, bx + 512};
+      for (int i = 0; i < 4; i++) {
+        txt(FONTB, tile[i].v, tx[i], by + 56, 24, tile[i].c);
+        txt(FONT, tile[i].l, tx[i], by + 86, 11, DIM);
+      }
+      DrawLine((int)(bx + 20), (int)(by + 116), (int)(bx + box.width - 20),
+               (int)(by + 116), LINE);
 
-      /* left column: per-button counts (GameCube names when mapped) */
-      section_title("Buttons", box.x + 28, box.y + 148);
-      float yy = box.y + 176;
+      /* --- column A: lifetime button breakdown + D-pad --- */
+      section_title("Buttons (lifetime)", colA, by + 132);
+      float yy = by + 158;
       if (eng_has_btnmap()) {
         for (int i = 0; i < eng_btnmap_total(); i++) {
           int code = eng_gc_code(i);
           long n = code >= 0 ? eng_stats_key(code) : 0;
-          txt(FONT, eng_gc_name(i), box.x + 28, yy, 14, TXT);
-          txt(FONT, TextFormat("%ld", n), box.x + 150, yy, 14, DIM);
-          yy += 22;
+          double pct = life > 0 ? 100.0 * n / life : 0.0;
+          txt(FONT, eng_gc_name(i), colA, yy, 13, TXT);
+          txt(FONT, TextFormat("%ld", n), colA + 96, yy, 13, DIM);
+          txt(FONT, TextFormat("%4.1f%%", pct), colA + 150, yy, 12,
+              Fade(DIM, 0.8f));
+          yy += 19;
         }
       } else {
         int codes[64];
         int n = eng_list_keys(codes, 64), shown = 0;
-        for (int i = 0; i < n && shown < 9; i++) {
+        for (int i = 0; i < n && shown < 8; i++) {
           long c = eng_stats_key(codes[i]);
           if (c == 0)
             continue;
-          txt(FONT, shortname(eng_code_name_key(codes[i])), box.x + 28, yy, 14,
-              TXT);
-          txt(FONT, TextFormat("%ld", c), box.x + 150, yy, 14, DIM);
-          yy += 22;
+          txt(FONT, shortname(eng_code_name_key(codes[i])), colA, yy, 13, TXT);
+          txt(FONT, TextFormat("%ld", c), colA + 96, yy, 13, DIM);
+          yy += 19;
           shown++;
         }
         if (shown == 0)
-          txt(FONT, "no presses yet", box.x + 28, yy, 13, DIM);
+          txt(FONT, "no presses yet", colA, yy, 13, DIM);
       }
-
-      /* compact D-pad line under the button list */
-      section_title("D-Pad", box.x + 28, box.y + 392);
+      section_title("D-Pad", colA, by + 326);
       txt(FONT,
           TextFormat("U %ld   D %ld   L %ld   R %ld", eng_stats_dpad_count(0),
                      eng_stats_dpad_count(1), eng_stats_dpad_count(2),
                      eng_stats_dpad_count(3)),
-          box.x + 28, box.y + 420, 13, DIM);
+          colA, by + 352, 13, DIM);
 
-      /* right column: the run tracker fed by dusklight over LiveSplit */
-      section_title("Current Run", box.x + 330, box.y + 148);
-      const char *lst = !ls_listening() ? "server off"
+      /* --- column B: current/last run, fed by dusklight --- */
+      section_title("Current Run", colB, by + 132);
+      const char *lst = !ls_listening()  ? "server off"
                         : !ls_connected() ? "waiting for dusklight"
                         : ls_run_active() ? "RUN ACTIVE"
                                           : "connected (idle)";
@@ -1242,44 +1497,124 @@ int main(int argc, char **argv) {
                   : !ls_connected() ? WARN
                   : ls_run_active() ? GOOD
                                     : DIM;
-      txt(FONT, lst, box.x + 330, box.y + 174, 13, lsc);
+      txt(FONT, lst, colB, by + 158, 13, lsc);
 
-      long live_pr = run_live ? eng_stats_presses() - run_base : last_pr;
+      long live_pr = run_live ? life - run_base : last_pr;
       long live_ms = run_live ? ls_game_ms() : last_ms;
       double apm = live_ms > 0 ? live_pr * 60000.0 / live_ms : 0.0;
-      txt(FONTB, TextFormat("%ld", live_pr), box.x + 330, box.y + 196, 30,
+      double peak = run_live ? run_peak_apm : last_peak_apm;
+      txt(FONTB, TextFormat("%ld", live_pr), colB, by + 176, 26,
           run_live ? GOOD : (last_pr ? TXT : DIM));
-      txt(FONT, run_live ? "presses this run" : "presses (last run)",
-          box.x + 330, box.y + 230, 13, DIM);
-      txt(FONT, TextFormat("%s    %.0f apm", fmt_ms(live_ms), apm), box.x + 330,
-          box.y + 250, 13, DIM);
+      txt(FONT, run_live ? "presses this run" : "presses (last run)", colB,
+          by + 206, 12, DIM);
+      txt(FONT, TextFormat("time   %s", fmt_ms(live_ms)), colB, by + 226, 13,
+          DIM);
+      txt(FONT, TextFormat("avg    %.0f apm", apm), colB, by + 244, 13, DIM);
+      txt(FONT, TextFormat("now    %.0f apm", run_live ? cur_apm : 0.0), colB,
+          by + 262, 13, DIM);
+      txt(FONT, TextFormat("peak   %.0f apm", peak), colB, by + 280, 13, DIM);
 
-      section_title("Recent Runs", box.x + 330, box.y + 286);
-      if (rh_n == 0) {
-        txt(FONT, "(no runs yet)", box.x + 330, box.y + 314, 13,
-            Fade(DIM, 0.7f));
+      section_title("This Run by Button", colB, by + 306);
+      if (!eng_has_btnmap()) {
+        txt(FONT, "(map buttons first)", colB, by + 332, 12, Fade(DIM, 0.7f));
       } else {
-        long best = -1;
-        for (int i = 0; i < rh_n; i++)
-          if (best < 0 || rh_pr[i] < best)
-            best = rh_pr[i];
-        float ryy = box.y + 314;
+        float byy = by + 332;
+        for (int i = 0; i < eng_btnmap_total(); i++) {
+          int code = eng_gc_code(i);
+          long v = run_live ? (code >= 0 ? eng_stats_key(code) : 0) -
+                                  run_base_key[i]
+                            : last_key[i];
+          txt(FONT, eng_gc_name(i), colB, byy, 13, TXT);
+          txt(FONT, TextFormat("%ld", v), colB + 96, byy, 13, DIM);
+          byy += 18;
+        }
+      }
+
+      /* --- column C: aggregate summary + recent runs --- */
+      section_title("Run Summary", colC, by + 132);
+      struct {
+        const char *l, *v;
+      } sum[] = {
+          {"best", TextFormat("%ld", ag.best)},
+          {"average", TextFormat("%.0f", ag.avg)},
+          {"median", TextFormat("%.0f", ag.median)},
+          {"worst", TextFormat("%ld", ag.worst)},
+          {"best apm", TextFormat("%.0f", ag.best_apm)},
+          {"avg apm", TextFormat("%.0f", ag.avg_apm)},
+      };
+      float syy = by + 158;
+      for (int i = 0; i < 6; i++) {
+        txt(FONT, sum[i].l, colC, syy, 13, DIM);
+        txt(FONT, sum[i].v, colC + 110, syy, 13, i == 0 ? GOOD : TXT);
+        syy += 20;
+      }
+
+      section_title("Recent Runs", colC, by + 290);
+      int seli = (sel_run >= 0 && sel_run < rh_n) ? sel_run : rh_n - 1;
+      if (rh_n == 0) {
+        txt(FONT, "(no runs yet)", colC, by + 316, 13, Fade(DIM, 0.7f));
+      } else {
+        float ryy = by + 314;
         for (int i = rh_n - 1; i >= 0 && i > rh_n - 7; i--) {
-          bool is_best = rh_pr[i] == best;
-          txt(FONT, fmt_ms(rh_ms[i]), box.x + 330, ryy, 13, TXT);
-          txt(FONT, TextFormat("%ld", rh_pr[i]), box.x + 470, ryy, 13,
+          Rectangle row = {colC - 4, ryy - 2, 196, 18};
+          bool hover = CheckCollisionPointRec(GetMousePosition(), row);
+          if (i == seli)
+            DrawRectangleRounded(row, 0.3f, 4, Fade(ACCENT, 0.18f));
+          else if (hover)
+            DrawRectangleRounded(row, 0.3f, 4, Fade(DIM, 0.10f));
+          if (hover && IsMouseButtonPressed(MOUSE_BUTTON_LEFT))
+            sel_run = i;
+          bool is_best = rh_pr[i] == ag.best;
+          txt(FONT, TextFormat("#%d", i + 1), colC, ryy, 12, Fade(DIM, 0.8f));
+          txt(FONT, fmt_ms(rh_ms[i]), colC + 34, ryy, 12, TXT);
+          txt(FONT, TextFormat("%ld", rh_pr[i]), colC + 140, ryy, 12,
               is_best ? GOOD : DIM);
           ryy += 18;
         }
-        txt(FONT, TextFormat("best %ld presses", best), box.x + 330,
-            box.y + 314 + 6 * 18 + 4, 12, Fade(GOOD, 0.8f));
+        /* per-run export, acting on the selected (default newest) run; the
+           per-button breakdown only exists for the just-finished run */
+        bool newest = seli == rh_n - 1 && !run_live && eng_has_btnmap();
+        float pry = by + 440;
+        if (GuiButton((Rectangle){colC, pry, 90, 30}, "Run CSV")) {
+          char path[600];
+          if (export_run_csv(path, sizeof path, seli + 1, rh_when[seli],
+                             rh_ms[seli], rh_pr[seli], newest ? last_key : NULL,
+                             newest ? eng_btnmap_total() : 0))
+            snprintf(export_msg, sizeof export_msg, "saved -> %s", path);
+          else
+            snprintf(export_msg, sizeof export_msg, "run CSV failed");
+          export_msg_t = GetTime();
+        }
+        if (GuiButton((Rectangle){colC + 98, pry, 90, 30}, "Run PNG")) {
+          png_idx = seli + 1;
+          png_when = rh_when[seli];
+          png_ms = rh_ms[seli];
+          png_pr = rh_pr[seli];
+          png_haskey = newest;
+          if (newest)
+            for (int i = 0; i < eng_btnmap_total() && i < 16; i++)
+              png_key[i] = last_key[i];
+          png_pending = true; /* render happens after EndDrawing */
+        }
       }
 
-      if (GuiButton((Rectangle){box.x + 28, box.y + box.height - 56, 150, 38},
-                    "Reset Stats"))
+      /* export toast */
+      if (export_msg[0] && GetTime() - export_msg_t < 6.0)
+        txt(FONT, export_msg, colA, by + box.height - 82, 12, GOOD);
+
+      float brow = by + box.height - 52;
+      if (GuiButton((Rectangle){bx + 28, brow, 150, 38}, "Reset Stats"))
         confirm_stats_reset = true;
-      if (GuiButton((Rectangle){box.x + 462, box.y + box.height - 56, 150, 38},
-                    "Close"))
+      if (GuiButton((Rectangle){bx + box.width / 2 - 75, brow, 150, 38},
+                    "Export CSV")) {
+        char path[600];
+        if (export_stats_csv(path, sizeof path, rh_when, rh_ms, rh_pr, rh_n))
+          snprintf(export_msg, sizeof export_msg, "exported -> %s", path);
+        else
+          snprintf(export_msg, sizeof export_msg, "export failed");
+        export_msg_t = GetTime();
+      }
+      if (GuiButton((Rectangle){bx + box.width - 178, brow, 150, 38}, "Close"))
         show_stats = false;
     }
 
@@ -1301,6 +1636,20 @@ int main(int argc, char **argv) {
     }
 
     EndDrawing();
+
+    /* deferred run-card PNG export: render-to-texture must be outside the
+       BeginDrawing/EndDrawing pair above */
+    if (png_pending) {
+      png_pending = false;
+      char path[600];
+      if (export_run_png(path, sizeof path, png_idx, png_when, png_ms, png_pr,
+                         png_haskey ? png_key : NULL,
+                         png_haskey ? eng_btnmap_total() : 0))
+        snprintf(export_msg, sizeof export_msg, "saved -> %s", path);
+      else
+        snprintf(export_msg, sizeof export_msg, "run PNG failed");
+      export_msg_t = GetTime();
+    }
   }
 
   eng_stats_save();
