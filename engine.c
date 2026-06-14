@@ -122,6 +122,33 @@ typedef struct {
 static eng_stats stats;
 static int prev_dpx, prev_dpy; /* last D-pad direction, for edge counting */
 
+/* ---------- calibration drift watch ----------
+   Compares live stick behavior with the calibrated geometry. Sampled per frame
+   in eng_poll() while not in a wizard; the baseline is wiped on every
+   (re)calibration via rebuild_maps()/eng_clear_cal(). Within one session the
+   per-notch max reach tracks current capability (wear accrues over weeks, not
+   minutes), so comparing it to the possibly-old calibrated notch reveals drift.
+ */
+#define DRIFT_REST_MIN 200 /* settled frames before center drift is trusted */
+#define DRIFT_HIT_MIN 8    /* samples near a notch before reach is trusted */
+static double drift_rest_x[2], drift_rest_y[2]; /* EMA of resting position */
+static long drift_rest_n[2];                    /* settled-frame count */
+static double drift_reach[2][ENG_NOTCH]; /* max deflection seen / notch */
+static long drift_hits[2][ENG_NOTCH];    /* samples assigned / notch */
+static int drift_prev[2][2];             /* prev raw x,y for velocity */
+
+static void drift_reset(void) {
+  memset(drift_rest_x, 0, sizeof drift_rest_x);
+  memset(drift_rest_y, 0, sizeof drift_rest_y);
+  memset(drift_rest_n, 0, sizeof drift_rest_n);
+  memset(drift_reach, 0, sizeof drift_reach);
+  memset(drift_hits, 0, sizeof drift_hits);
+  memset(drift_prev, 0, sizeof drift_prev);
+}
+
+static bool cal_active;
+static int cal_stick, cal_phase, cal_notch;
+
 static bool cal_active;
 static int cal_stick, cal_phase, cal_notch;
 static int cal_cand[2] = {-1, -1};
@@ -263,6 +290,7 @@ static void rebuild_maps(void) {
   build_map(&cal[0], &map[0], diag_frac[0]);
   build_map(&cal[1], &map[1], diag_frac[1]);
   recompute_is_stick();
+  drift_reset();
 }
 
 /* an analog (non-stick) axis worth treating as a trigger: real range, not a
@@ -632,6 +660,7 @@ void eng_clear_cal(void) {
     trig_on[c] = false;
   cal[0].ax = 0, cal[0].ay = 1, cal[1].ax = 5, cal[1].ay = 2;
   recompute_is_stick();
+  drift_reset();
   eng_stop_remap();
   eng_save_cfg();
 }
@@ -898,6 +927,53 @@ static void stats_on_frame(void) {
   prev_dpy = dy;
 }
 
+/* once per device frame, while calibrated and not mid-wizard: fold the live
+   stick position into the drift estimators. */
+static void drift_sample(void) {
+  double full = (amax - amin) / 2.0;
+  if (full < 1)
+    return;
+  for (int s = 0; s < 2; s++) {
+    int ax = cal[s].ax, ay = cal[s].ay;
+    if (ax < 0 || ax >= ABS_CNT || ay < 0 || ay >= ABS_CNT)
+      continue;
+    double dx = cur[ax] - cal[s].cx, dy = cur[ay] - cal[s].cy;
+    double r = hypot(dx, dy);
+    int dvx = cur[ax] - drift_prev[s][0], dvy = cur[ay] - drift_prev[s][1];
+    drift_prev[s][0] = cur[ax];
+    drift_prev[s][1] = cur[ay];
+    bool still = dvx * dvx + dvy * dvy <= 4; /* <=2 units/frame */
+    if (still && r < full * 0.25) {          /* settled near center */
+      if (drift_rest_n[s] == 0) {
+        drift_rest_x[s] = cur[ax];
+        drift_rest_y[s] = cur[ay];
+      } else {
+        drift_rest_x[s] += 0.02 * (cur[ax] - drift_rest_x[s]);
+        drift_rest_y[s] += 0.02 * (cur[ay] - drift_rest_y[s]);
+      }
+      drift_rest_n[s]++;
+    }
+    if (r > full * 0.5) { /* pushed toward a corner: find nearest notch */
+      double phi = atan2(dy, dx);
+      int best = 0;
+      double bestd = 1e9;
+      for (int i = 0; i < ENG_NOTCH; i++) {
+        double na = atan2(cal[s].ny[i] - cal[s].cy, cal[s].nx[i] - cal[s].cx);
+        double d = fabs(atan2(sin(phi - na), cos(phi - na)));
+        if (d < bestd) {
+          bestd = d;
+          best = i;
+        }
+      }
+      if (bestd < 22.5 * DEG) { /* within half a sector of the notch */
+        drift_hits[s][best]++;
+        if (r > drift_reach[s][best])
+          drift_reach[s][best] = r;
+      }
+    }
+  }
+}
+
 void eng_poll(void) {
   ENG_GUARD;
   if (!dev) {
@@ -945,6 +1021,8 @@ void eng_poll(void) {
         libevdev_uinput_write_event(ui, EV_KEY, ev.code, ev.value);
     } else if (ev.type == EV_SYN && ev.code == SYN_REPORT) {
       stats_on_frame();
+      if (have_cal && !cal_active && !trig_active && !map_active)
+        drift_sample();
       if (emit)
         emit_sticks();
     } else if (ev.type != EV_SYN) {
@@ -995,6 +1073,45 @@ void eng_ideal_vec(int s, int i, double *wx, double *wy) {
 void eng_remap_point(int s, int rx, int ry, int *ox, int *oy) {
   ENG_GUARD;
   remap(&map[s], rx, ry, ox, oy);
+}
+
+void eng_drift(int s, eng_drift_info *out) {
+  ENG_GUARD;
+  memset(out, 0, sizeof *out);
+  out->worst_notch = -1;
+  if (s < 0 || s > 1 || !have_cal)
+    return;
+  if (drift_rest_n[s] >= DRIFT_REST_MIN) {
+    out->center_dev =
+        hypot(drift_rest_x[s] - cal[s].cx, drift_rest_y[s] - cal[s].cy);
+    out->valid = true;
+  }
+  for (int i = 0; i < ENG_NOTCH; i++) {
+    if (drift_hits[s][i] < DRIFT_HIT_MIN)
+      continue;
+    double cm = hypot(cal[s].nx[i] - cal[s].cx, cal[s].ny[i] - cal[s].cy);
+    if (cm < 1)
+      continue;
+    double rd = (cm - drift_reach[s][i]) / cm; /* >0 = under-reach */
+    if (rd < 0)
+      rd = 0;
+    out->reach_dev[i] = rd;
+    out->valid = true;
+    if (rd > out->worst_reach_dev) {
+      out->worst_reach_dev = rd;
+      out->worst_notch = i;
+    }
+  }
+}
+
+const char *eng_notch_name(int s, int i) {
+  ENG_GUARD;
+  static const char *N[8] = {"E", "NE", "N", "NW", "W", "SW", "S", "SE"};
+  if (s < 0 || s > 1 || i < 0 || i >= ENG_NOTCH)
+    return "?";
+  double a = atan2(cal[s].ny[i] - cal[s].cy, cal[s].nx[i] - cal[s].cx);
+  int k = ((int)lround(a / (M_PI / 4.0)) % 8 + 8) % 8;
+  return N[k];
 }
 
 int eng_raw(int code) { return (code >= 0 && code < ABS_CNT) ? cur[code] : 0; }

@@ -119,3 +119,16 @@ void eng_dev_next(void);
 /* /dev/input node of the virtual remap device while remapping, else NULL.
    Lets a separate viewer process read the post-remap output. */
 const char *eng_remap_devnode(void);
+
+/* ---------- calibration drift watch ----------
+   Passively flags a stick that has worn past its last calibration. Sampled
+   during normal use; baseline reset on every (re)calibration. */
+typedef struct {
+  bool valid;                  /* enough samples to judge */
+  double center_dev;           /* resting drift from center, axis units */
+  double reach_dev[ENG_NOTCH]; /* per-notch under-reach fraction (0..1) */
+  int worst_notch;             /* notch with largest under-reach, or -1 */
+  double worst_reach_dev;      /* that notch's fraction */
+} eng_drift_info;
+void eng_drift(int stick, eng_drift_info *out); /* 0=control, 1=cstick */
+const char *eng_notch_name(int stick, int i);   /* compass label for a notch */

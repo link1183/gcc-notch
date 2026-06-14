@@ -1093,9 +1093,37 @@ int main(int argc, char **argv) {
 
     /* status pill, top-right */
     bool conn = eng_connected();
-    Color sc = conn ? (eng_has_cal() ? GOOD : WARN) : BAD;
-    const char *st =
-        conn ? (eng_has_cal() ? "ready" : "not calibrated") : "disconnected";
+
+    /* drift watch: nudge toward recalibration once a calibrated stick has worn
+   past its calibration. 8% under-reach or 6 axis-units of center drift. */
+    char drift_msg[96] = {0};
+    bool drifting = false;
+    if (conn && eng_has_cal()) {
+      for (int s = 0; s < 2 && !drifting; s++) {
+        eng_drift_info d;
+        eng_drift(s, &d);
+        if (!d.valid)
+          continue;
+        const char *sn = s == 0 ? "Control" : "C";
+        if (d.worst_notch >= 0 && d.worst_reach_dev >= 0.08) {
+          snprintf(drift_msg, sizeof drift_msg,
+                   "%s stick: %s notch reach -%.0f%%  (recalibrate)", sn,
+                   eng_notch_name(s, d.worst_notch), d.worst_reach_dev * 100.0);
+          drifting = true;
+        } else if (d.center_dev >= 6.0) {
+          snprintf(drift_msg, sizeof drift_msg,
+                   "%s stick: center drift %.0f  (recalibrate)", sn,
+                   d.center_dev);
+          drifting = true;
+        }
+      }
+    }
+    Color sc = !conn ? BAD : drifting ? WARN : eng_has_cal() ? GOOD : WARN;
+    const char *st = !conn           ? "disconnected"
+                     : drifting      ? "drift"
+                     : eng_has_cal() ? "ready"
+                                     : "not calibrated";
+
     float pw = tw(FONT, st, 14) + 44;
     Rectangle pill = {W - 28 - pw, 18, pw, 28};
     DrawRectangleRounded(pill, 1.0f, 12, PANEL2);
@@ -1127,6 +1155,9 @@ int main(int argc, char **argv) {
     lx = chip(lx, ly, ACCENT, "measured notches");
     lx = chip(lx, ly, Fade(GOOD, 0.7f), "ideal octagon");
     (void)lx;
+
+    if (drifting)
+      txt(FONT, drift_msg, 28, 448, 12, WARN);
 
     /* ---- right column: buttons & axes ---------------------------------- */
     Rectangle bpanel = {684, 84, W - 684 - 28, 300};
