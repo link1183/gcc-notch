@@ -60,7 +60,7 @@ void eng_profile_delete(const char *name);
 void eng_cal_begin(void);
 bool eng_cal_active(void);
 int eng_cal_stick(void);
-int eng_cal_phase(void); /* 0=detect axes, 1=center, 2=notches */
+int eng_cal_phase(void); /* 0=spin, 1=orient(push right), 2=center, 3=notches */
 int eng_cal_notch(void);
 void eng_cal_advance(void);
 void eng_cal_cancel(void);

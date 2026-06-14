@@ -71,6 +71,7 @@ static int map_idx;     /* which GC button we're capturing         */
 
 static bool cal_active;
 static int cal_stick, cal_phase, cal_notch;
+static int cal_cand[2] = {-1, -1};
 static eng_stick_cal tmp[2];
 static int lo6[6], hi6[6];
 
@@ -298,7 +299,7 @@ static bool load_from(const char *p) {
   diag_frac[0] = diag_frac[1] = 0.70;
   deadzone = 0.0;
   trig_dz = 0.0;
-  cal[0].ax = 0, cal[0].ay = 1, cal[1].ax = 2, cal[1].ay = 5;
+  cal[0].ax = 0, cal[0].ay = 1, cal[1].ax = 5, cal[1].ay = 2;
   for (int i = 0; i < GC_N; i++)
     gc_btn[i] = -1;
   have_btnmap = false;
@@ -531,7 +532,7 @@ void eng_clear_cal(void) {
   have_trig = false;
   for (int c = 0; c < ABS_CNT; c++)
     trig_on[c] = false;
-  cal[0].ax = 0, cal[0].ay = 1, cal[1].ax = 2, cal[1].ay = 5;
+  cal[0].ax = 0, cal[0].ay = 1, cal[1].ax = 5, cal[1].ay = 2;
   recompute_is_stick();
   eng_stop_remap();
   eng_save_cfg();
@@ -600,8 +601,8 @@ bool eng_open(const char *path) {
   /* sensible defaults so the viewer shows something before calibration */
   cal[0].ax = 0;
   cal[0].ay = 1;
-  cal[1].ax = 2;
-  cal[1].ay = 5;
+  cal[1].ax = 5;
+  cal[1].ay = 2;
   recompute_is_stick();
   scan_devices();
   if (path) {
@@ -871,18 +872,29 @@ void eng_cal_advance(void) {
         b2 = i;
       }
     }
-    if (b1 < b2) {
-      t->ax = b1;
-      t->ay = b2;
-    } else {
-      t->ax = b2;
-      t->ay = b1;
-    }
+    cal_cand[0] = b1;
+    cal_cand[1] = b2;
     cal_phase = 1;
   } else if (cal_phase == 1) {
+    int a = cal_cand[0], b = cal_cand[1];
+    if (a >= 0 && b >= 0) {
+      double ma = (lo6[a] + hi6[a]) / 2.0, mb = (lo6[b] + hi6[b]) / 2.0;
+      if (fabs(cur[b] - mb) > fabs(cur[a] - ma)) {
+        int s = a;
+        a = b;
+        b = s;
+      }
+      t->ax = a;
+      t->ay = b;
+    } else { /* detection incomplete: fall back to the old index heuristic */
+      t->ax = (a < b) ? a : b;
+      t->ay = (a < b) ? b : a;
+    }
+    cal_phase = 2;
+  } else if (cal_phase == 2) {
     t->cx = cur[t->ax];
     t->cy = cur[t->ay];
-    cal_phase = 2;
+    cal_phase = 3;
     cal_notch = 0;
   } else {
     t->nx[cal_notch] = cur[t->ax];
@@ -893,6 +905,7 @@ void eng_cal_advance(void) {
         cal_stick = 1;
         cal_phase = 0;
         cal_notch = 0;
+        cal_cand[0] = cal_cand[1] = -1;
         for (int i = 0; i < 6; i++) {
           lo6[i] = INT_MAX;
           hi6[i] = INT_MIN;

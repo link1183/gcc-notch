@@ -650,6 +650,8 @@ int main(int argc, char **argv) {
       if (ph == 0)
         msg = "Spin the stick fully around its gate, then press Next.";
       else if (ph == 1)
+        msg = "Push and hold the stick fully RIGHT, then press Next.";
+      else if (ph == 2)
         msg = "Let the stick rest at center, then press Capture.";
       else {
         snprintf(buf, sizeof buf, "Hold notch %d / 8, then press Capture.",
@@ -659,16 +661,16 @@ int main(int argc, char **argv) {
       txt(FONT, msg, box.x + 28, box.y + 92, 16, TXT);
 
       /* step dots */
-      for (int i = 0; i < 3; i++)
+      for (int i = 0; i < 4; i++)
         DrawCircleV((Vector2){box.x + 28 + i * 16, box.y + 128}, 4,
-                    i <= (ph > 2 ? 2 : ph) ? ACCENT : LINE);
+                    i <= (ph > 3 ? 3 : ph) ? ACCENT : LINE);
 
       const eng_stick_cal *c = eng_cal(eng_cal_stick());
       txt(FONT, TextFormat("live  (%d, %d)", eng_raw(c->ax), eng_raw(c->ay)),
           box.x + 28, box.y + 150, 14, DIM);
 
       if (GuiButton((Rectangle){box.x + 28, box.y + 182, 150, 38},
-                    ph == 0 ? "Next" : "Capture"))
+                    ph <= 1 ? "Next" : "Capture"))
         eng_cal_advance();
       if (GuiButton((Rectangle){box.x + 322, box.y + 182, 150, 38}, "Cancel"))
         eng_cal_cancel();
