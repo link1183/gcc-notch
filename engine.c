@@ -1,9 +1,9 @@
+#include <asm-generic/errno-base.h>
 #include <libevdev-1.0/libevdev/libevdev.h>
 #include <sys/stat.h>
 #define _GNU_SOURCE
 #include "engine.h"
 #include <dirent.h>
-#include <errno.h>
 #include <fcntl.h>
 #include <libevdev-1.0/libevdev/libevdev-uinput.h>
 #include <libevdev/libevdev.h>
@@ -248,6 +248,7 @@ static void cfg_path(char *b, size_t n) {
   const char *h = getenv("HOME");
   snprintf(b, n, "%s/%s", h ? h : ".", CFG_REL);
 }
+
 static void ensure_parent(const char *p) {
   char t[256];
   snprintf(t, sizeof t, "%s", p);
@@ -258,6 +259,7 @@ static void ensure_parent(const char *p) {
       *q = '/';
     }
 }
+
 static bool save_to(const char *p) {
   ensure_parent(p);
   FILE *f = fopen(p, "w");
@@ -391,25 +393,31 @@ static bool load_from(const char *p) {
 
 /* ---------- profiles ---------- */
 static char cur_profile[64] = "default";
+
 static char prof_names[32][64];
+
 static int prof_count;
 
 static void profiles_dir(char *b, size_t n) {
   const char *h = getenv("HOME");
   snprintf(b, n, "%s/.config/gcc-notch/profiles", h ? h : ".");
 }
+
 static void profile_path(const char *name, char *b, size_t n) {
   const char *h = getenv("HOME");
   snprintf(b, n, "%s/.config/gcc-notch/profiles/%s.conf", h ? h : ".", name);
 }
+
 static void active_path(char *b, size_t n) {
   const char *h = getenv("HOME");
   snprintf(b, n, "%s/.config/gcc-notch/active", h ? h : ".");
 }
+
 static bool is_conf(const char *nm) {
   size_t L = strlen(nm);
   return L > 5 && !strcmp(nm + L - 5, ".conf");
 }
+
 static void scan_profiles(void) {
   prof_count = 0;
   char dir[256];
@@ -461,6 +469,7 @@ static void read_active(void) {
     fclose(f);
   }
 }
+
 static void write_active(void) {
   char ap[256];
   active_path(ap, sizeof ap);
@@ -477,6 +486,7 @@ bool eng_save_cfg(void) {
   profile_path(cur_profile, p, sizeof p);
   return save_to(p);
 }
+
 bool eng_load_cfg(void) {
   migrate_legacy();
   read_active();
@@ -489,10 +499,13 @@ int eng_profile_count(void) {
   scan_profiles();
   return prof_count;
 }
+
 const char *eng_profile_name(int i) {
   return (i >= 0 && i < prof_count) ? prof_names[i] : "";
 }
+
 const char *eng_profile_current(void) { return cur_profile; }
+
 bool eng_profile_select(const char *name) {
   char p[256];
   profile_path(name, p, sizeof p);
@@ -505,6 +518,7 @@ bool eng_profile_select(const char *name) {
   write_active();
   return true;
 }
+
 bool eng_profile_save_as(const char *name) {
   char p[256];
   profile_path(name, p, sizeof p);
@@ -514,6 +528,7 @@ bool eng_profile_save_as(const char *name) {
   write_active();
   return true;
 }
+
 void eng_profile_delete(const char *name) {
   char p[256];
   profile_path(name, p, sizeof p);
@@ -553,6 +568,7 @@ static void seed_state(void) {
              ? libevdev_get_abs_maximum(dev, ABS_X)
              : 255;
 }
+
 static bool open_path(const char *path) {
   int fd = open(path, O_RDONLY | O_NONBLOCK);
   if (fd < 0)
@@ -625,12 +641,17 @@ void eng_close(void) {
     devfd = -1;
   }
 }
+
 bool eng_connected(void) { return connected; }
+
 long eng_event_count(void) { return ev_count; }
+
 int eng_dev_count(void) { return devcount; }
+
 const char *eng_dev_path(void) {
   return devcount ? devpaths[devidx] : "(none)";
 }
+
 void eng_dev_next(void) {
   if (devcount < 2)
     return;
@@ -745,24 +766,33 @@ void eng_poll(void) {
 
 /* ---------- accessors ---------- */
 int eng_axis_min(void) { return amin; }
+
 int eng_axis_max(void) { return amax; }
+
 bool eng_has_cal(void) { return have_cal; }
+
 const eng_stick_cal *eng_cal(int s) { return &cal[s]; }
+
 void eng_measured_vec(int s, int i, double *vx, double *vy) {
   *vx = map[s].vx[i];
   *vy = map[s].vy[i];
 }
+
 void eng_ideal_vec(int s, int i, double *wx, double *wy) {
   *wx = map[s].wx[i];
   *wy = map[s].wy[i];
 }
+
 void eng_remap_point(int s, int rx, int ry, int *ox, int *oy) {
   remap(&map[s], rx, ry, ox, oy);
 }
+
 int eng_raw(int code) { return (code >= 0 && code < ABS_CNT) ? cur[code] : 0; }
+
 bool eng_key(int code) {
   return (code >= 0 && code < KEY_CNT) ? keyst[code] != 0 : false;
 }
+
 int eng_list_keys(int *codes, int max) {
   if (!dev)
     return 0;
@@ -772,6 +802,7 @@ int eng_list_keys(int *codes, int max) {
       codes[n++] = c;
   return n;
 }
+
 int eng_list_extra_abs(int *codes, int max) {
   if (!dev)
     return 0;
@@ -781,18 +812,23 @@ int eng_list_extra_abs(int *codes, int max) {
       codes[n++] = c;
   return n;
 }
+
 const char *eng_code_name_key(int c) {
   const char *s = libevdev_event_code_get_name(EV_KEY, c);
   return s ? s : "?";
 }
+
 const char *eng_code_name_abs(int c) {
   const char *s = libevdev_event_code_get_name(EV_ABS, c);
   return s ? s : "?";
 }
+
 int eng_abs_min(int c) { return dev ? libevdev_get_abs_minimum(dev, c) : 0; }
+
 int eng_abs_max(int c) { return dev ? libevdev_get_abs_maximum(dev, c) : 255; }
 
 bool eng_remap_active(void) { return remapping; }
+
 /* tear down the uinput mirror without forgetting the user's intent */
 static void remap_teardown(void) {
   if (ui) {
@@ -822,19 +858,26 @@ bool eng_start_remap(void) {
   remapping = true;
   return true;
 }
+
 void eng_stop_remap(void) {
   want_remap = false; /* explicit user stop */
   remap_teardown();
 }
+
 double eng_get_diag(int s) { return diag_frac[s & 1]; }
+
 void eng_set_diag(int s, double d) {
   diag_frac[s & 1] = d;
   if (have_cal)
     rebuild_maps();
 }
+
 double eng_get_deadzone(void) { return deadzone; }
+
 void eng_set_deadzone(double d) { deadzone = d; }
+
 double eng_get_trig_dz(void) { return trig_dz; }
+
 void eng_set_trig_dz(double d) { trig_dz = d; }
 
 /* ---------- calibration wizard ---------- */
@@ -849,11 +892,17 @@ void eng_cal_begin(void) {
     hi6[i] = INT_MIN;
   }
 }
+
 bool eng_cal_active(void) { return cal_active; }
+
 int eng_cal_stick(void) { return cal_stick; }
+
 int eng_cal_phase(void) { return cal_phase; }
+
 int eng_cal_notch(void) { return cal_notch; }
+
 void eng_cal_cancel(void) { cal_active = false; }
+
 void eng_cal_advance(void) {
   if (!cal_active)
     return;
@@ -931,9 +980,13 @@ void eng_trig_begin(void) {
     t_hi[c] = INT_MIN;
   }
 }
+
 bool eng_trig_active(void) { return trig_active; }
+
 int eng_trig_phase(void) { return trig_phase; }
+
 void eng_trig_cancel(void) { trig_active = false; }
+
 void eng_trig_advance(void) {
   if (!trig_active)
     return;
@@ -951,10 +1004,13 @@ void eng_trig_advance(void) {
   eng_save_cfg();
   trig_active = false;
 }
+
 bool eng_has_trig(void) { return have_trig; }
+
 bool eng_is_trig(int code) {
   return code >= 0 && code < ABS_CNT && trig_on[code];
 }
+
 int eng_trig_out(int code, int raw) { return trig_apply(code, raw); }
 
 /* ---------- GameCube button map ---------- */
@@ -996,30 +1052,40 @@ void eng_btnmap_begin(void) {
   for (int i = 0; i < GC_N; i++)
     gc_btn[i] = -1;
 }
+
 bool eng_btnmap_active(void) { return map_active; }
+
 int eng_btnmap_index(void) { return map_idx; }
+
 int eng_btnmap_total(void) { return GC_N; }
+
 const char *eng_btnmap_name(void) {
   return (map_idx >= 0 && map_idx < GC_N) ? GC_NAMES[map_idx] : "";
 }
+
 void eng_btnmap_skip(void) {
   if (!map_active)
     return;
   gc_btn[map_idx] = -1;
   btnmap_advance();
 }
+
 void eng_btnmap_cancel(void) { map_active = false; }
 
 bool eng_has_btnmap(void) { return have_btnmap; }
 const char *eng_gc_name(int i) {
   return (i >= 0 && i < GC_N) ? GC_NAMES[i] : "";
 }
+
 bool eng_gc_pressed(int i) {
   if (i < 0 || i >= GC_N)
     return false;
   int c = gc_btn[i];
   return c >= 0 && c < KEY_CNT && keyst[c];
 }
+
+bool eng_gc_mapped(int i) { return i >= 0 && i < GC_N && gc_btn[i] >= 0; }
+
 /* D-pad direction as -1/0/+1 on each axis (raw hat sign; up = -y) */
 void eng_dpad(int *x, int *y) {
   if (dpad_x < 0 && dpad_y < 0)

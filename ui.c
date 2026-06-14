@@ -466,24 +466,45 @@ int main(int argc, char **argv) {
     /* ---- right column: buttons & axes ---------------------------------- */
     Rectangle bpanel = {684, 84, W - 684 - 28, 300};
     card(bpanel);
-    section_title("Buttons", bpanel.x + 16, bpanel.y + 12);
-    int codes[64];
-    int n = eng_list_keys(codes, 64);
     int colw = (int)(bpanel.width - 32) / 2;
     int bx = (int)bpanel.x + 16, by = (int)bpanel.y + 44, col = 0;
-    for (int i = 0; i < n; i++) {
-      bool on = eng_key(codes[i]);
-      Rectangle led = {(float)bx, (float)by, 14, 14};
-      DrawRectangleRounded(led, 0.35f, 4, on ? GOOD : PANEL2);
-      if (!on)
-        DrawRectangleRoundedLinesEx(led, 0.35f, 4, 1.0f, LINE);
-      txt(FONT, shortname(eng_code_name_key(codes[i])), bx + 22, by - 1, 13,
-          on ? TXT : DIM);
-      by += 22;
-      if (by > bpanel.y + bpanel.height - 24) {
-        col++;
-        by = (int)bpanel.y + 44;
-        bx = (int)bpanel.x + 16 + col * colw;
+    if (eng_has_btnmap()) {
+      /* show the mapped GameCube buttons by name, lit from the stored map */
+      int total = eng_btnmap_total();
+      for (int i = 0; i < total; i++) {
+        bool mapped = eng_gc_mapped(i), on = eng_gc_pressed(i);
+        Rectangle led = {(float)bx, (float)by, 14, 14};
+        DrawRectangleRounded(led, 0.35f, 4, on ? GOOD : PANEL2);
+        if (!on)
+          DrawRectangleRoundedLinesEx(led, 0.35f, 4, 1.0f, LINE);
+        txt(FONT,
+            mapped ? eng_gc_name(i)
+                   : TextFormat("%s  (unmapped)", eng_gc_name(i)),
+            bx + 22, by - 1, 13, on ? TXT : (mapped ? DIM : Fade(DIM, 0.5f)));
+        by += 22;
+        if (by > bpanel.y + bpanel.height - 24) {
+          col++;
+          by = (int)bpanel.y + 44;
+          bx = (int)bpanel.x + 16 + col * colw;
+        }
+      }
+    } else {
+      int codes[64];
+      int n = eng_list_keys(codes, 64);
+      for (int i = 0; i < n; i++) {
+        bool on = eng_key(codes[i]);
+        Rectangle led = {(float)bx, (float)by, 14, 14};
+        DrawRectangleRounded(led, 0.35f, 4, on ? GOOD : PANEL2);
+        if (!on)
+          DrawRectangleRoundedLinesEx(led, 0.35f, 4, 1.0f, LINE);
+        txt(FONT, shortname(eng_code_name_key(codes[i])), bx + 22, by - 1, 13,
+            on ? TXT : DIM);
+        bx += 22;
+        if (by > bpanel.y + bpanel.height - 24) {
+          col++;
+          by = (int)bpanel.y + 44;
+          bx = (int)bpanel.x + 16 + col * colw;
+        }
       }
     }
 

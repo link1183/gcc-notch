@@ -86,6 +86,7 @@ void eng_btnmap_cancel(void);
 bool eng_has_btnmap(void);
 const char *eng_gc_name(int i); /* GC button name by index */
 bool eng_gc_pressed(int i);     /* is GC button i currently pressed */
+bool eng_gc_mapped(int i);      /* *true if GC button has a physical mapping */
 void eng_dpad(int *x, int *y);  /* D-pad direction, each -1/0/+1 */
 
 /* device picker */
