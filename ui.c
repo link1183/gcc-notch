@@ -3,11 +3,13 @@
 #include "engine.h"
 #include <math.h>
 #include <raygui.h>
+#include <signal.h>
 #include <stdio.h>
 #include <string.h>
+#include <unistd.h>
 
 #define W 1060
-#define H 656
+#define H 712
 
 /* ---- palette (dark) ---------------------------------------------------- */
 static const Color BG = {15, 17, 23, 255};       /* window background      */
@@ -63,19 +65,51 @@ static const char *shortname(const char *s) {
   return s;
 }
 
+/* ---- per-stick input trail (ring buffer of recent raw/remapped points) - */
+#define TRAIL_N 90
+static int rxh[2][TRAIL_N], ryh[2][TRAIL_N], oxh[2][TRAIL_N], oyh[2][TRAIL_N];
+static int thead[2], tcount[2];
+
+static void trail_push(int s, int rx, int ry, int ox, int oy) {
+  int h = thead[s];
+  rxh[s][h] = rx, ryh[s][h] = ry, oxh[s][h] = ox, oyh[s][h] = oy;
+  thead[s] = (h + 1) % TRAIL_N;
+  if (tcount[s] < TRAIL_N)
+    tcount[s]++;
+}
+static void trail_draw(Rectangle a, int s, bool cal) {
+  int cnt = tcount[s];
+  int base = (thead[s] - cnt + 2 * TRAIL_N) % TRAIL_N;
+  for (int k = 1; k < cnt; k++) {
+    int i0 = (base + k - 1) % TRAIL_N, i1 = (base + k) % TRAIL_N;
+    float age = (float)k / cnt; /* 0 = oldest, 1 = newest */
+    DrawLineEx(rts(a, rxh[s][i0], ryh[s][i0]), rts(a, rxh[s][i1], ryh[s][i1]),
+               1.2f, Fade(BAD, 0.04f + 0.30f * age));
+    if (cal)
+      DrawLineEx(rts(a, oxh[s][i0], oyh[s][i0]), rts(a, oxh[s][i1], oyh[s][i1]),
+                 1.2f, Fade(GOOD, 0.04f + 0.30f * age));
+  }
+}
+
 static void draw_stick(Rectangle outer, const char *title, int stick) {
   card(outer);
   txt(FONTB, title, outer.x + 16, outer.y + 12, 17, TXT);
 
-  /* plot area inset below the title */
+  /* plot area inset below the title (leaves room for the diag slider) */
   Rectangle a = {outer.x + 16, outer.y + 40, outer.width - 32,
-                 outer.height - 56};
+                 outer.height - 84};
   DrawRectangleRounded(a, 0.03f, 6, PANEL2);
 
   Vector2 ctr = rts(a, 128, 128);
 
   /* range circle */
   DrawCircleLinesV(ctr, a.width * 0.46f, GRID);
+
+  /* center deadzone ring (a raw circle maps to an ellipse in plot space) */
+  double dz = eng_get_deadzone();
+  if (dz > 0)
+    DrawEllipseLines((int)ctr.x, (int)ctr.y, (float)dz * a.width / 2.0f,
+                     (float)dz * a.height / 2.0f, Fade(BAD, 0.45f));
 
   /* grid: quarter divisions */
   for (int i = 1; i < 4; i++) {
@@ -120,14 +154,36 @@ static void draw_stick(Rectangle outer, const char *title, int stick) {
   }
 
   int rx = eng_raw(c->ax), ry = eng_raw(c->ay);
-  if (eng_has_cal()) {
-    int ox, oy;
+  bool cal = eng_has_cal();
+  int ox = rx, oy = ry;
+  if (cal)
     eng_remap_point(stick, rx, ry, &ox, &oy);
+
+  /* fading input trail (drawn under the live dots) */
+  trail_push(stick, rx, ry, ox, oy);
+  trail_draw(a, stick, cal);
+
+  if (cal) {
     /* line from raw -> remapped to show the correction */
     DrawLineEx(rts(a, rx, ry), rts(a, ox, oy), 1.5f, Fade(GOOD, 0.35f));
     glow_dot(rts(a, ox, oy), 5.0f, GOOD);
   }
   glow_dot(rts(a, rx, ry), 5.0f, BAD);
+
+  /* live axis values, bottom-left of the plot */
+  txt(FONT, TextFormat("raw  %d, %d", rx, ry), a.x + 8, a.y + a.height - 40, 12,
+      Fade(BAD, 0.95f));
+  if (cal)
+    txt(FONT, TextFormat("out  %d, %d", ox, oy), a.x + 8, a.y + a.height - 22,
+        12, Fade(GOOD, 0.95f));
+
+  /* per-stick diagonal slider under the plot */
+  float dv = (float)eng_get_diag(stick);
+  txt(FONT, "diag", a.x, a.y + a.height + 12, 13, DIM);
+  Rectangle ds = {a.x + 44, a.y + a.height + 10, a.width - 44 - 44, 16};
+  GuiSliderBar(ds, NULL, TextFormat("%.2f", dv), &dv, 0.30f, 1.0f);
+  if (fabsf(dv - (float)eng_get_diag(stick)) > 1e-4f)
+    eng_set_diag(stick, dv);
 }
 
 /* a small legend chip: colored dot + label */
@@ -137,10 +193,51 @@ static float chip(float x, float y, Color c, const char *label) {
   return x + 16 + MeasureTextEx(FONT, label, 13, 13 / 16.0f).x + 22;
 }
 
+/* ---- headless daemon mode --------------------------------------------- */
+static volatile sig_atomic_t daemon_run = 1;
+static void on_signal(int sig) {
+  (void)sig;
+  daemon_run = 0;
+}
+
+static int run_daemon(const char *devpath) {
+  eng_load_cfg();
+  if (!eng_has_cal()) {
+    fprintf(stderr,
+            "gcc-notch: no calibration found; run the GUI to calibrate first\n");
+    return 1;
+  }
+  eng_open(devpath); /* may be disconnected now; reconnect loop will pick it up */
+  signal(SIGINT, on_signal);
+  signal(SIGTERM, on_signal);
+  eng_start_remap(); /* sets intent; resumes automatically once connected */
+  fprintf(stderr, "gcc-notch: remapping in daemon mode (Ctrl-C to stop)\n");
+  while (daemon_run) {
+    eng_poll();
+    usleep(1000);
+  }
+  eng_close();
+  return 0;
+}
+
 int main(int argc, char **argv) {
+  const char *devpath = NULL;
+  bool daemon_mode = false, auto_remap = false;
+  for (int i = 1; i < argc; i++) {
+    if (!strcmp(argv[i], "--daemon") || !strcmp(argv[i], "-d"))
+      daemon_mode = true;
+    else if (!strcmp(argv[i], "--remap"))
+      auto_remap = true;
+    else
+      devpath = argv[i];
+  }
+  if (daemon_mode)
+    return run_daemon(devpath);
+
   SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
   InitWindow(W, H, "GCC Notch Remapper");
   SetTargetFPS(240);
+  SetExitKey(KEY_NULL); /* we handle Esc ourselves (modal cancel / quit) */
 
   /* crisp TTF; fall back to the built-in font if unavailable */
   const char *reg = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf";
@@ -168,10 +265,48 @@ int main(int argc, char **argv) {
   GuiSetStyle(DEFAULT, TEXT_COLOR_PRESSED, ColorToInt(BG));
 
   eng_load_cfg();
-  eng_open(argc > 1 ? argv[1] : NULL);
+  eng_open(devpath);
+  if (auto_remap)
+    eng_start_remap();
+
+  /* profile dropdown + modal state (persist across frames) */
+  int dd_idx = 0;
+  bool dd_edit = false;
+  bool name_modal = false, confirm_reset = false;
+  char name_buf[64] = "";
 
   while (!WindowShouldClose()) {
     eng_poll();
+
+    /* keyboard shortcuts (suppressed while a modal owns the screen) */
+    bool modal = eng_cal_active() || eng_trig_active() || name_modal ||
+                 confirm_reset;
+    if (!modal) {
+      if (IsKeyPressed(KEY_SPACE)) {
+        if (eng_remap_active())
+          eng_stop_remap();
+        else
+          eng_start_remap();
+      }
+      if (IsKeyPressed(KEY_C))
+        eng_cal_begin();
+      if (IsKeyPressed(KEY_T))
+        eng_trig_begin();
+      if (IsKeyPressed(KEY_R))
+        eng_load_cfg();
+    }
+    if (IsKeyPressed(KEY_ESCAPE)) {
+      if (eng_cal_active())
+        eng_cal_cancel();
+      else if (eng_trig_active())
+        eng_trig_cancel();
+      else if (name_modal)
+        name_modal = false;
+      else if (confirm_reset)
+        confirm_reset = false;
+      else
+        break; /* quit */
+    }
 
     BeginDrawing();
     ClearBackground(BG);
@@ -182,6 +317,21 @@ int main(int argc, char **argv) {
     txt(FONTB, "GCC Notch Remapper", 28, 14, 24, TXT);
     txt(FONT, "GameCube controller calibration & notch remapping", 28, 42, 13,
         DIM);
+
+    /* fps / event-rate readout, bottom-right (recomputed twice a second) */
+    static double rate_t = 0;
+    static long rate_ev = 0;
+    static int evrate = 0;
+    double now = GetTime();
+    if (now - rate_t >= 0.5) {
+      long ec = eng_event_count();
+      evrate = (int)((ec - rate_ev) / (now - rate_t));
+      rate_ev = ec;
+      rate_t = now;
+    }
+    const char *perf = TextFormat("%d fps   %d ev/s", GetFPS(), evrate);
+    float pwf = MeasureTextEx(FONT, perf, 13, 13 / 16.0f).x;
+    txt(FONT, perf, W - 28 - pwf, H - 22, 13, DIM);
 
     /* status pill, top-right */
     bool conn = eng_connected();
@@ -195,12 +345,25 @@ int main(int argc, char **argv) {
     DrawCircleV((Vector2){pill.x + 18, pill.y + 14}, 5, sc);
     txt(FONT, st, pill.x + 30, pill.y + 6, 14, TXT);
 
+    /* REMAP ACTIVE badge (pulsing), left of the status pill */
+    if (eng_remap_active()) {
+      const char *bt = "REMAP ACTIVE";
+      float bw = MeasureTextEx(FONT, bt, 13, 13 / 16.0f).x + 36;
+      Rectangle rb = {pill.x - 12 - bw, 18, bw, 28};
+      DrawRectangleRounded(rb, 1.0f, 12, Fade(GOOD, 0.15f));
+      DrawRectangleRoundedLinesEx(rb, 1.0f, 12, 1.0f, Fade(GOOD, 0.7f));
+      float pulse = 0.5f + 0.5f * sinf((float)GetTime() * 4.0f);
+      DrawCircleV((Vector2){rb.x + 18, rb.y + 14}, 5,
+                  Fade(GOOD, 0.35f + 0.65f * pulse));
+      txt(FONT, bt, rb.x + 30, rb.y + 6, 13, GOOD);
+    }
+
     /* ---- stick plots --------------------------------------------------- */
-    draw_stick((Rectangle){28, 84, 312, 312}, "Control Stick", 0);
-    draw_stick((Rectangle){352, 84, 312, 312}, "C-Stick", 1);
+    draw_stick((Rectangle){28, 84, 312, 340}, "Control Stick", 0);
+    draw_stick((Rectangle){352, 84, 312, 340}, "C-Stick", 1);
 
     /* legend */
-    float lx = 28, ly = 406;
+    float lx = 28, ly = 434;
     lx = chip(lx, ly, BAD, "raw");
     lx = chip(lx, ly, GOOD, "remapped");
     lx = chip(lx, ly, ACCENT, "measured notches");
@@ -231,7 +394,7 @@ int main(int argc, char **argv) {
       }
     }
 
-    Rectangle apanel = {684, 400, W - 684 - 28, 168};
+    Rectangle apanel = {684, 400, W - 684 - 28, 220};
     card(apanel);
     txt(FONTB, "Axes / Triggers", apanel.x + 16, apanel.y + 12, 17, TXT);
     int ac[16];
@@ -264,11 +427,18 @@ int main(int argc, char **argv) {
       ty += 24;
     }
     if (!eng_has_trig())
-      txt(FONT, "triggers not calibrated", apanel.x + 16,
-          apanel.y + apanel.height - 24, 12, DIM);
+      txt(FONT, "triggers not calibrated", apanel.x + 16, ty, 12, DIM);
+    /* trigger bottom-deadzone slider */
+    float tz = (float)eng_get_trig_dz();
+    txt(FONT, "trig dz", apanel.x + 16, apanel.y + apanel.height - 32, 13, DIM);
+    Rectangle tzs = {apanel.x + 96, apanel.y + apanel.height - 34,
+                     apanel.width - 96 - 16 - 50, 16};
+    GuiSliderBar(tzs, NULL, TextFormat("%.2f", tz), &tz, 0.0f, 0.40f);
+    if (fabsf(tz - (float)eng_get_trig_dz()) > 1e-4f)
+      eng_set_trig_dz(tz);
 
     /* ---- controls panel ------------------------------------------------ */
-    Rectangle cp = {28, 436, 636, 132};
+    Rectangle cp = {28, 462, 636, 158};
     card(cp);
     txt(FONTB, "Controls", cp.x + 16, cp.y + 12, 17, TXT);
 
@@ -286,16 +456,55 @@ int main(int argc, char **argv) {
       eng_trig_begin();
 
     float row2 = cp.y + 88;
-    float df = (float)eng_get_diag();
-    GuiSliderBar((Rectangle){cp.x + 72, row2, 150, 30}, "Diag",
-                 TextFormat("%.2f", df), &df, 0.30f, 1.0f);
-    if (fabsf(df - (float)eng_get_diag()) > 1e-4f)
-      eng_set_diag(df);
-    if (GuiButton((Rectangle){cp.x + 266, row2, 104, 30}, "Reload cfg"))
+    float dzc = (float)eng_get_deadzone();
+    GuiSliderBar((Rectangle){cp.x + 96, row2, 150, 30}, "Deadzone",
+                 TextFormat("%.2f", dzc), &dzc, 0.0f, 0.30f);
+    if (fabsf(dzc - (float)eng_get_deadzone()) > 1e-4f)
+      eng_set_deadzone(dzc);
+    if (GuiButton((Rectangle){cp.x + 290, row2, 104, 30}, "Reload cfg"))
       eng_load_cfg();
-    if (GuiButton((Rectangle){cp.x + 382, row2, cp.width - 398, 30},
+    if (GuiButton((Rectangle){cp.x + 406, row2, cp.width - 422, 30},
                   TextFormat("Port:  %s", eng_dev_path())))
       eng_dev_next();
+
+    /* row3: profile management (dropdown itself is drawn later for z-order) */
+    float row3 = cp.y + 124;
+    if (GuiButton((Rectangle){cp.x + 196, row3, 64, 28}, "New")) {
+      name_buf[0] = 0;
+      name_modal = true;
+    }
+    if (GuiButton((Rectangle){cp.x + 268, row3, 76, 28}, "Delete"))
+      eng_profile_delete(eng_profile_current());
+    if (GuiButton((Rectangle){cp.x + 490, row3, 130, 28}, "Reset Cal."))
+      confirm_reset = true;
+
+    /* profile dropdown, drawn last so its open list overlays the row above */
+    int pc = eng_profile_count();
+    if (pc > 0) {
+      char items[1024];
+      items[0] = 0;
+      int curidx = 0;
+      for (int i = 0; i < pc; i++) {
+        if (i)
+          strncat(items, ";", sizeof items - strlen(items) - 1);
+        strncat(items, eng_profile_name(i), sizeof items - strlen(items) - 1);
+        if (!strcmp(eng_profile_name(i), eng_profile_current()))
+          curidx = i;
+      }
+      if (!dd_edit)
+        dd_idx = curidx;
+      if (GuiDropdownBox((Rectangle){cp.x + 16, row3, 170, 28}, items, &dd_idx,
+                         dd_edit)) {
+        if (dd_edit) {
+          dd_edit = false;
+          eng_profile_select(eng_profile_name(dd_idx));
+        } else {
+          dd_edit = true;
+        }
+      }
+    } else {
+      txt(FONT, "(no profiles yet)", cp.x + 16, row3 + 6, 13, DIM);
+    }
 
     /* ---- calibration overlay ------------------------------------------- */
     if (eng_cal_active()) {
@@ -384,6 +593,48 @@ int main(int argc, char **argv) {
         eng_trig_advance();
       if (GuiButton((Rectangle){box.x + 322, box.y + 202, 150, 38}, "Cancel"))
         eng_trig_cancel();
+    }
+
+    /* ---- new-profile modal --------------------------------------------- */
+    if (name_modal) {
+      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
+      Rectangle box = {W / 2.0f - 220, H / 2.0f - 90, 440, 180};
+      DrawRectangleRounded(box, 0.06f, 10, PANEL);
+      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      txt(FONTB, "New Profile", box.x + 28, box.y + 22, 22, TXT);
+      txt(FONT, "Saves the current calibration under this name:", box.x + 28,
+          box.y + 56, 14, DIM);
+      GuiTextBox((Rectangle){box.x + 28, box.y + 80, box.width - 56, 32},
+                 name_buf, 64, true);
+      bool ok = name_buf[0] != 0;
+      if (!ok)
+        GuiDisable();
+      if (GuiButton((Rectangle){box.x + 28, box.y + 126, 150, 38}, "Save")) {
+        eng_profile_save_as(name_buf);
+        name_modal = false;
+      }
+      if (!ok)
+        GuiEnable();
+      if (GuiButton((Rectangle){box.x + 262, box.y + 126, 150, 38}, "Cancel"))
+        name_modal = false;
+    }
+
+    /* ---- reset-calibration confirm ------------------------------------- */
+    if (confirm_reset) {
+      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
+      Rectangle box = {W / 2.0f - 220, H / 2.0f - 80, 440, 160};
+      DrawRectangleRounded(box, 0.06f, 10, PANEL);
+      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(BAD, 0.6f));
+      txt(FONTB, "Clear Calibration?", box.x + 28, box.y + 22, 22, TXT);
+      txt(FONT, TextFormat("This wipes calibration in profile \"%s\".",
+                           eng_profile_current()),
+          box.x + 28, box.y + 56, 14, DIM);
+      if (GuiButton((Rectangle){box.x + 28, box.y + 104, 150, 38}, "Clear")) {
+        eng_clear_cal();
+        confirm_reset = false;
+      }
+      if (GuiButton((Rectangle){box.x + 262, box.y + 104, 150, 38}, "Cancel"))
+        confirm_reset = false;
     }
 
     EndDrawing();

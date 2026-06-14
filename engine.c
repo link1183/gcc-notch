@@ -13,6 +13,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 #include <unistd.h>
 
 #define OUT_CENTER 128.0
@@ -35,6 +36,8 @@ static struct libevdev *dev;
 static int devfd = -1;
 static struct libevdev_uinput *ui;
 static bool remapping, connected;
+static bool want_remap; /* user intent: keep remapping across reconnects */
+static long ev_count;   /* cumulative EV_ABS/EV_KEY events, for rate readout */
 
 static int cur[ABS_CNT];
 static int keyst[KEY_CNT];
@@ -43,7 +46,9 @@ static eng_stick_cal cal[2];
 static smap map[2];
 static bool have_cal;
 static bool is_stick[ABS_CNT];
-static double diag_frac = 0.70;
+static double diag_frac[2] = {0.70, 0.70};
+static double deadzone = 0.0; /* center deadzone, fraction of stick radius */
+static double trig_dz = 0.0;  /* trigger bottom deadzone, fraction of range */
 static int amin = 0, amax = 255;
 
 /* analog trigger rescaling: map measured [lo,hi] onto the axis full range */
@@ -61,6 +66,8 @@ static int lo6[6], hi6[6];
 
 static char devpaths[16][64];
 static int devcount, devidx;
+
+static void remap_teardown(void); /* defined with the remap controls below */
 
 /* ---------- math ---------- */
 static void canonical_target(int k, double diag, double *tx, double *ty) {
@@ -131,7 +138,20 @@ static void build_map(const eng_stick_cal *sc, smap *mp, double diag) {
 }
 
 static void remap(const smap *mp, int rx, int ry, int *ox, int *oy) {
-  double sx = rx - mp->cx, sy = ry - mp->cy, phi = atan2(sy, sx);
+  double sx = rx - mp->cx, sy = ry - mp->cy;
+  /* radial center deadzone: snap to center inside, ramp magnitude outside */
+  double dz = deadzone * (mp->amax - mp->amin) / 2.0;
+  double r = hypot(sx, sy);
+  if (r <= dz) {
+    *ox = *oy = (int)lround(OUT_CENTER);
+    return;
+  }
+  if (dz > 0) {
+    double k = (r - dz) / r;
+    sx *= k;
+    sy *= k;
+  }
+  double phi = atan2(sy, sx);
   int sec = ENG_NOTCH - 1;
   for (int j = 0; j < ENG_NOTCH - 1; j++)
     if (phi >= mp->ang[j] && phi < mp->ang[j + 1]) {
@@ -164,8 +184,8 @@ static void recompute_is_stick(void) {
 }
 
 static void rebuild_maps(void) {
-  build_map(&cal[0], &map[0], diag_frac);
-  build_map(&cal[1], &map[1], diag_frac);
+  build_map(&cal[0], &map[0], diag_frac[0]);
+  build_map(&cal[1], &map[1], diag_frac[1]);
   recompute_is_stick();
 }
 
@@ -195,6 +215,8 @@ static int trig_apply(int code, int v) {
     f = 0;
   if (f > 1)
     f = 1;
+  if (trig_dz > 0)
+    f = (f <= trig_dz) ? 0.0 : (f - trig_dz) / (1.0 - trig_dz);
   return (int)lround(dmin + f * (dmax - dmin));
 }
 
@@ -224,9 +246,7 @@ static void ensure_parent(const char *p) {
       *q = '/';
     }
 }
-bool eng_save_cfg(void) {
-  char p[256];
-  cfg_path(p, sizeof p);
+static bool save_to(const char *p) {
   ensure_parent(p);
   FILE *f = fopen(p, "w");
   if (!f)
@@ -239,7 +259,10 @@ bool eng_save_cfg(void) {
     for (int i = 0; i < ENG_NOTCH; i++)
       fprintf(f, " %.3f %.3f", cal[k].nx[i], cal[k].ny[i]);
     fprintf(f, "\n");
+    fprintf(f, "%s diag %.4f\n", nm[k], diag_frac[k]);
   }
+  fprintf(f, "global deadzone %.4f\n", deadzone);
+  fprintf(f, "global trigdz %.4f\n", trig_dz);
   for (int c = 0; c < ABS_CNT; c++)
     if (trig_on[c])
       fprintf(f, "trigger %d %d %d\n", c, trig_lo[c], trig_hi[c]);
@@ -247,15 +270,19 @@ bool eng_save_cfg(void) {
   return true;
 }
 
-bool eng_load_cfg(void) {
-  char p[256];
-  cfg_path(p, sizeof p);
+static bool load_from(const char *p) {
   FILE *f = fopen(p, "r");
   if (!f)
     return false;
+  /* reset to defaults so a partial profile doesn't inherit prior values */
   for (int c = 0; c < ABS_CNT; c++)
     trig_on[c] = false;
   have_trig = false;
+  have_cal = false;
+  diag_frac[0] = diag_frac[1] = 0.70;
+  deadzone = 0.0;
+  trig_dz = 0.0;
+  cal[0].ax = 0, cal[0].ay = 1, cal[1].ax = 2, cal[1].ay = 5;
   char a[64], b[64];
   int gc = 0, gk = 0;
   while (fscanf(f, "%63s %63s", a, b) == 2) {
@@ -266,6 +293,16 @@ bool eng_load_cfg(void) {
         trig_hi[code] = hi;
         trig_on[code] = true;
         have_trig = true;
+      }
+      continue;
+    }
+    if (!strcmp(a, "global")) {
+      double val;
+      if (fscanf(f, "%lf", &val) == 1) {
+        if (!strcmp(b, "deadzone"))
+          deadzone = val;
+        else if (!strcmp(b, "trigdz"))
+          trig_dz = val;
       }
       continue;
     }
@@ -296,6 +333,11 @@ bool eng_load_cfg(void) {
         gc = 1;
       else
         gk = 1;
+    } else if (!strcmp(b, "diag")) {
+      if (fscanf(f, "%lf", &diag_frac[s]) != 1) {
+        fclose(f);
+        return false;
+      }
     } else {
       if (fgets(ln, sizeof ln, f)) {
       }
@@ -308,6 +350,155 @@ bool eng_load_cfg(void) {
     return true;
   }
   return false;
+}
+
+/* ---------- profiles ---------- */
+static char cur_profile[64] = "default";
+static char prof_names[32][64];
+static int prof_count;
+
+static void profiles_dir(char *b, size_t n) {
+  const char *h = getenv("HOME");
+  snprintf(b, n, "%s/.config/gcc-notch/profiles", h ? h : ".");
+}
+static void profile_path(const char *name, char *b, size_t n) {
+  const char *h = getenv("HOME");
+  snprintf(b, n, "%s/.config/gcc-notch/profiles/%s.conf", h ? h : ".", name);
+}
+static void active_path(char *b, size_t n) {
+  const char *h = getenv("HOME");
+  snprintf(b, n, "%s/.config/gcc-notch/active", h ? h : ".");
+}
+static bool is_conf(const char *nm) {
+  size_t L = strlen(nm);
+  return L > 5 && !strcmp(nm + L - 5, ".conf");
+}
+static void scan_profiles(void) {
+  prof_count = 0;
+  char dir[256];
+  profiles_dir(dir, sizeof dir);
+  DIR *d = opendir(dir);
+  if (!d)
+    return;
+  struct dirent *e;
+  while ((e = readdir(d)) && prof_count < 32)
+    if (is_conf(e->d_name))
+      snprintf(prof_names[prof_count++], 64, "%.*s",
+               (int)(strlen(e->d_name) - 5), e->d_name);
+  closedir(d);
+}
+
+/* one-time import of the legacy single-file config into profiles/default */
+static void migrate_legacy(void) {
+  char dir[256];
+  profiles_dir(dir, sizeof dir);
+  scan_profiles();
+  if (prof_count > 0)
+    return;
+  char legacy[256];
+  cfg_path(legacy, sizeof legacy);
+  FILE *in = fopen(legacy, "r");
+  if (!in)
+    return;
+  char dst[256];
+  profile_path("default", dst, sizeof dst);
+  ensure_parent(dst);
+  FILE *out = fopen(dst, "w");
+  if (out) {
+    int ch;
+    while ((ch = fgetc(in)) != EOF)
+      fputc(ch, out);
+    fclose(out);
+  }
+  fclose(in);
+}
+
+static void read_active(void) {
+  snprintf(cur_profile, sizeof cur_profile, "default");
+  char ap[256];
+  active_path(ap, sizeof ap);
+  FILE *f = fopen(ap, "r");
+  if (f) {
+    if (fscanf(f, "%63s", cur_profile) != 1)
+      snprintf(cur_profile, sizeof cur_profile, "default");
+    fclose(f);
+  }
+}
+static void write_active(void) {
+  char ap[256];
+  active_path(ap, sizeof ap);
+  ensure_parent(ap);
+  FILE *f = fopen(ap, "w");
+  if (f) {
+    fprintf(f, "%s\n", cur_profile);
+    fclose(f);
+  }
+}
+
+bool eng_save_cfg(void) {
+  char p[256];
+  profile_path(cur_profile, p, sizeof p);
+  return save_to(p);
+}
+bool eng_load_cfg(void) {
+  migrate_legacy();
+  read_active();
+  char p[256];
+  profile_path(cur_profile, p, sizeof p);
+  return load_from(p);
+}
+
+int eng_profile_count(void) {
+  scan_profiles();
+  return prof_count;
+}
+const char *eng_profile_name(int i) {
+  return (i >= 0 && i < prof_count) ? prof_names[i] : "";
+}
+const char *eng_profile_current(void) { return cur_profile; }
+bool eng_profile_select(const char *name) {
+  char p[256];
+  profile_path(name, p, sizeof p);
+  FILE *t = fopen(p, "r");
+  if (!t)
+    return false;
+  fclose(t);
+  load_from(p);
+  snprintf(cur_profile, sizeof cur_profile, "%s", name);
+  write_active();
+  return true;
+}
+bool eng_profile_save_as(const char *name) {
+  char p[256];
+  profile_path(name, p, sizeof p);
+  if (!save_to(p))
+    return false;
+  snprintf(cur_profile, sizeof cur_profile, "%s", name);
+  write_active();
+  return true;
+}
+void eng_profile_delete(const char *name) {
+  char p[256];
+  profile_path(name, p, sizeof p);
+  remove(p);
+  if (!strcmp(name, cur_profile)) {
+    scan_profiles();
+    if (prof_count > 0)
+      eng_profile_select(prof_names[0]);
+    else
+      snprintf(cur_profile, sizeof cur_profile, "default");
+  }
+}
+
+void eng_clear_cal(void) {
+  have_cal = false;
+  have_trig = false;
+  for (int c = 0; c < ABS_CNT; c++)
+    trig_on[c] = false;
+  cal[0].ax = 0, cal[0].ay = 1, cal[1].ax = 2, cal[1].ay = 5;
+  recompute_is_stick();
+  eng_stop_remap();
+  eng_save_cfg();
 }
 
 /* ---------- device ---------- */
@@ -398,6 +589,7 @@ void eng_close(void) {
   }
 }
 bool eng_connected(void) { return connected; }
+long eng_event_count(void) { return ev_count; }
 int eng_dev_count(void) { return devcount; }
 const char *eng_dev_path(void) {
   return devcount ? devpaths[devidx] : "(none)";
@@ -405,7 +597,7 @@ const char *eng_dev_path(void) {
 void eng_dev_next(void) {
   if (devcount < 2)
     return;
-  eng_stop_remap();
+  remap_teardown(); /* keep remap intent across the port switch */
   if (dev) {
     libevdev_free(dev);
     dev = NULL;
@@ -415,12 +607,48 @@ void eng_dev_next(void) {
     devfd = -1;
   }
   devidx = (devidx + 1) % devcount;
-  open_path(devpaths[devidx]);
+  if (open_path(devpaths[devidx]) && want_remap && have_cal)
+    eng_start_remap();
+}
+
+/* device vanished: drop it cleanly but remember whether we were remapping */
+static void handle_disconnect(void) {
+  remap_teardown();
+  if (dev) {
+    libevdev_free(dev);
+    dev = NULL;
+  }
+  if (devfd >= 0) {
+    close(devfd);
+    devfd = -1;
+  }
+  connected = false;
+}
+
+/* throttled rescan; reopens the controller and resumes remap when it returns */
+static void try_reconnect(void) {
+  static double last;
+  struct timespec ts;
+  clock_gettime(CLOCK_MONOTONIC, &ts);
+  double t = ts.tv_sec + ts.tv_nsec / 1e9;
+  if (t - last < 0.5)
+    return;
+  last = t;
+  scan_devices();
+  if (devcount == 0)
+    return;
+  if (devidx >= devcount)
+    devidx = 0;
+  if (open_path(devpaths[devidx]) && want_remap && have_cal)
+    eng_start_remap();
 }
 
 void eng_poll(void) {
-  if (!dev)
-    return;
+  if (!dev) {
+    try_reconnect();
+    if (!dev)
+      return;
+  }
   struct input_event ev;
   int rc;
   bool emit = remapping && ui && !cal_active && !trig_active;
@@ -428,12 +656,14 @@ void eng_poll(void) {
     if (rc == LIBEVDEV_READ_STATUS_SYNC)
       continue;
     if (ev.type == EV_ABS) {
+      ev_count++;
       if (ev.code < ABS_CNT)
         cur[ev.code] = ev.value;
       if (emit && ev.code < ABS_CNT && !is_stick[ev.code])
         libevdev_uinput_write_event(ui, EV_ABS, ev.code,
                                     trig_apply(ev.code, ev.value));
     } else if (ev.type == EV_KEY) {
+      ev_count++;
       if (ev.code < KEY_CNT)
         keyst[ev.code] = ev.value;
       if (emit)
@@ -447,7 +677,7 @@ void eng_poll(void) {
     }
   }
   if (rc == -ENODEV)
-    connected = false;
+    handle_disconnect();
   if (cal_active && cal_phase == 0)
     for (int i = 0; i < 6; i++) {
       if (cur[i] < lo6[i])
@@ -515,8 +745,21 @@ int eng_abs_min(int c) { return dev ? libevdev_get_abs_minimum(dev, c) : 0; }
 int eng_abs_max(int c) { return dev ? libevdev_get_abs_maximum(dev, c) : 255; }
 
 bool eng_remap_active(void) { return remapping; }
+/* tear down the uinput mirror without forgetting the user's intent */
+static void remap_teardown(void) {
+  if (ui) {
+    libevdev_uinput_destroy(ui);
+    ui = NULL;
+  }
+  if (dev)
+    libevdev_grab(dev, LIBEVDEV_UNGRAB);
+  remapping = false;
+}
 bool eng_start_remap(void) {
-  if (!dev || !have_cal || remapping)
+  if (!have_cal)
+    return false;
+  want_remap = true; /* intent persists even if the device isn't ready yet */
+  if (!dev || remapping)
     return false;
   if (libevdev_grab(dev, LIBEVDEV_GRAB) < 0)
     return false;
@@ -532,20 +775,19 @@ bool eng_start_remap(void) {
   return true;
 }
 void eng_stop_remap(void) {
-  if (ui) {
-    libevdev_uinput_destroy(ui);
-    ui = NULL;
-  }
-  if (dev)
-    libevdev_grab(dev, LIBEVDEV_UNGRAB);
-  remapping = false;
+  want_remap = false; /* explicit user stop */
+  remap_teardown();
 }
-double eng_get_diag(void) { return diag_frac; }
-void eng_set_diag(double d) {
-  diag_frac = d;
+double eng_get_diag(int s) { return diag_frac[s & 1]; }
+void eng_set_diag(int s, double d) {
+  diag_frac[s & 1] = d;
   if (have_cal)
     rebuild_maps();
 }
+double eng_get_deadzone(void) { return deadzone; }
+void eng_set_deadzone(double d) { deadzone = d; }
+double eng_get_trig_dz(void) { return trig_dz; }
+void eng_set_trig_dz(double d) { trig_dz = d; }
 
 /* ---------- calibration wizard ---------- */
 void eng_cal_begin(void) {

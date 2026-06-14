@@ -13,6 +13,7 @@ bool eng_open(const char *path); /* path or NULL to auto-find */
 void eng_close(void);
 void eng_poll(void); /* drain events; emit remapped output if active */
 bool eng_connected(void);
+long eng_event_count(void); /* cumulative input events seen */
 
 int eng_axis_min(void);
 int eng_axis_max(void);
@@ -36,11 +37,24 @@ bool eng_remap_active(void);
 bool eng_start_remap(void);
 void eng_stop_remap(void);
 
-double eng_get_diag(void);
-void eng_set_diag(double d);
+double eng_get_diag(int stick);
+void eng_set_diag(int stick, double d);
+double eng_get_deadzone(void); /* center deadzone, fraction of stick radius */
+void eng_set_deadzone(double d);
+double eng_get_trig_dz(void); /* trigger bottom deadzone, fraction of range */
+void eng_set_trig_dz(double d);
 
 bool eng_load_cfg(void);
 bool eng_save_cfg(void);
+void eng_clear_cal(void); /* wipe calibration in the active profile */
+
+/* profiles (~/.config/gcc-notch/profiles/<name>.conf) */
+int eng_profile_count(void);
+const char *eng_profile_name(int i);
+const char *eng_profile_current(void);
+bool eng_profile_select(const char *name);
+bool eng_profile_save_as(const char *name);
+void eng_profile_delete(const char *name);
 
 /* calibration wizard */
 void eng_cal_begin(void);
