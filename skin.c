@@ -43,14 +43,8 @@ static skin_t skins[SKIN_MAX];
 static int nskins = 0, cur = -1;
 
 /* ---- paths ---- */
-static void skins_dir(char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/skins", h ? h : ".");
-}
-static void choice_path(char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/skin", h ? h : ".");
-}
+static void skins_dir(char *b, size_t n) { eng_config_path(b, n, "skins"); }
+static void choice_path(char *b, size_t n) { eng_config_path(b, n, "skin"); }
 
 /* ---- xml attribute helpers ---- */
 static void prop_str(xmlNode *n, const char *k, char *out, size_t cap) {
@@ -222,9 +216,8 @@ int skin_load_all(void) {
   char dir[512];
   skins_dir(dir, sizeof dir);
   { /* make sure the folder exists so users have somewhere to drop skins */
-    const char *h = getenv("HOME");
     char p[600];
-    snprintf(p, sizeof p, "%s/.config/gcc-notch", h ? h : ".");
+    eng_config_path(p, sizeof p, "");
     mkdir(p, 0755);
     mkdir(dir, 0755);
   }

@@ -1,14 +1,15 @@
+#include <asm-generic/errno-base.h>
 #define _GNU_SOURCE
 #include "engine.h"
 #include <dirent.h>
-#include <errno.h>
 #include <fcntl.h>
-#include <libevdev-1.0/libevdev/libevdev.h>
 #include <libevdev-1.0/libevdev/libevdev-uinput.h>
+#include <libevdev-1.0/libevdev/libevdev.h>
 #include <limits.h>
 #include <linux/input-event-codes.h>
 #include <math.h>
 #include <pthread.h>
+#include <stdarg.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -20,7 +21,8 @@
    A background thread pumps eng_poll() so remapping survives the GUI window
    being hidden. A single recursive mutex serializes every public entry point
    that touches the device, the uinput mirror, or the remap tables; the guard
-   auto-unlocks on return (including early returns) via the cleanup attribute. */
+   auto-unlocks on return (including early returns) via the cleanup attribute.
+ */
 static pthread_mutex_t eng_mtx = PTHREAD_RECURSIVE_MUTEX_INITIALIZER_NP;
 static void eng_lock(void) { pthread_mutex_lock(&eng_mtx); }
 static void eng_unlock_p(int *p) {
@@ -60,7 +62,6 @@ void eng_io_stop(void) {
 #define DEG (M_PI / 180.0)
 
 static const char *DEV_NAME = "mayflash limited GameCube Controller Adapter";
-static const char *CFG_REL = ".config/gcc-notch/calib.conf";
 
 typedef struct {
   int ax, ay;
@@ -307,10 +308,21 @@ static void emit_sticks(void) {
 }
 
 /* ---------- config ---------- */
-static void cfg_path(char *b, size_t n) {
+void eng_config_path(char *buf, size_t n, const char *fmt, ...) {
+  if (n == 0) {
+    return;
+  }
   const char *h = getenv("HOME");
-  snprintf(b, n, "%s/%s", h ? h : ".", CFG_REL);
+  int k = snprintf(buf, n, "%s/.config/gcc-notch/", h ? h : ".");
+  if (k < 0 || (size_t)k >= n)
+    return;
+  va_list ap;
+  va_start(ap, fmt);
+  vsnprintf(buf + k, n - (size_t)k, fmt, ap);
+  va_end(ap);
 }
+
+static void cfg_path(char *b, size_t n) { eng_config_path(b, n, "calib.conf"); }
 
 static void ensure_parent(const char *p) {
   char t[256];
@@ -469,19 +481,14 @@ static char prof_names[32][64];
 static int prof_count;
 
 static void profiles_dir(char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/profiles", h ? h : ".");
+  eng_config_path(b, n, "profiles");
 }
 
 static void profile_path(const char *name, char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/profiles/%s.conf", h ? h : ".", name);
+  eng_config_path(b, n, "profiles/%s.conf", name);
 }
 
-static void active_path(char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/active", h ? h : ".");
-}
+static void active_path(char *b, size_t n) { eng_config_path(b, n, "active"); }
 
 static bool is_conf(const char *nm) {
   size_t L = strlen(nm);
@@ -631,8 +638,7 @@ void eng_clear_cal(void) {
 
 /* ---------- input statistics ---------- */
 static void stats_path(char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/stats.conf", h ? h : ".");
+  eng_config_path(b, n, "stats.conf");
 }
 
 bool eng_stats_save(void) {
@@ -1102,6 +1108,7 @@ void eng_set_trig_dz(double d) { trig_dz = d; }
 
 /* ---------- calibration wizard ---------- */
 void eng_cal_begin(void) {
+  ENG_GUARD;
   cal_active = true;
   cal_stick = 0;
   cal_phase = 0;
@@ -1194,6 +1201,7 @@ void eng_cal_advance(void) {
 
 /* ---------- trigger calibration ---------- */
 void eng_trig_begin(void) {
+  ENG_GUARD;
   trig_active = true;
   trig_phase = 0;
   for (int c = 0; c < ABS_CNT; c++) {
@@ -1269,6 +1277,7 @@ static void btnmap_advance(void) {
 }
 
 void eng_btnmap_begin(void) {
+  ENG_GUARD;
   map_active = true;
   map_idx = 0;
   for (int i = 0; i < GC_N; i++)

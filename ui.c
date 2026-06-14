@@ -29,7 +29,7 @@ static const Color GOOD = {70, 214, 160, 255};   /* green                 */
 static const Color BAD = {255, 93, 108, 255};    /* red                   */
 static const Color WARN = {255, 196, 87, 255};   /* amber                 */
 
-static Font FONT, FONTB; /* regular + semibold */
+static Font FONT, FONTB;                  /* regular + semibold */
 static char FONT_REG[512], FONT_BLD[512]; /* TTF paths, for hi-res PNG export */
 
 /* ---- text helpers ------------------------------------------------------ */
@@ -39,10 +39,7 @@ static void txt(Font f, const char *s, float x, float y, float sz, Color c) {
 }
 
 /* ---- viewer helpers ---------------------------------------------------- */
-static void viewer_path(char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/viewer", h ? h : ".");
-}
+static void viewer_path(char *b, size_t n) { eng_config_path(b, n, "viewer"); }
 
 static void viewer_save(int bg, bool bl, bool sv, bool hp) {
   char p[600];
@@ -73,8 +70,7 @@ static void viewer_load(int *bg, bool *bl, bool *sv, bool *hp) {
 
 /* ---- separate viewer process (its own window) -------------------------- */
 static void viewer_src_path(char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/viewer_src", h ? h : ".");
+  eng_config_path(b, n, "viewer_src");
 }
 /* the control process publishes which devnode the viewer should read: the
    virtual remap mirror while remapping, otherwise the physical controller */
@@ -127,10 +123,7 @@ static void launch_viewer_window(void) {
 }
 
 /* ---- run log (one finished speedrun per line) -------------------------- */
-static void runs_path(char *b, size_t n) {
-  const char *h = getenv("HOME");
-  snprintf(b, n, "%s/.config/gcc-notch/runs.log", h ? h : ".");
-}
+static void runs_path(char *b, size_t n) { eng_config_path(b, n, "runs.log"); }
 
 /* unix-time \t game-time-ms \t button-presses */
 static void append_run_log(long when, long game_ms, long presses) {
@@ -141,6 +134,23 @@ static void append_run_log(long when, long game_ms, long presses) {
     fprintf(f, "%ld\t%ld\t%ld\n", when, game_ms, presses);
     fclose(f);
   }
+}
+
+// in-memory ring of finished runs, newest last
+#define RUN_HIST 200
+static void push_run(long *when, long *ms, long *pr, int *n, long w, long m,
+                     long p) {
+  if (*n == RUN_HIST) {
+    // Full: drop the oldest, shift down by one
+    memmove(when, when + 1, (RUN_HIST - 1) * sizeof(long));
+    memmove(ms, ms + 1, (RUN_HIST - 1) * sizeof(long));
+    memmove(pr, pr + 1, (RUN_HIST - 1) * sizeof(long));
+    (*n)--;
+  }
+  when[*n] = w;
+  ms[*n] = m;
+  pr[*n] = p;
+  (*n)++;
 }
 
 /* ms -> "M:SS.mmm" (or "H:MM:SS.mmm" past an hour) */
@@ -202,13 +212,12 @@ static run_agg compute_agg(const long *ms, const long *pr, int n) {
    file; returns the path written via outpath */
 static bool export_stats_csv(char *outpath, size_t opn, const long *rh_when,
                              const long *rh_ms, const long *rh_pr, int rh_n) {
-  const char *h = getenv("HOME");
   time_t now = time(NULL);
   struct tm *tv = localtime(&now);
   char ts[32] = "export";
   if (tv)
     strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", tv);
-  snprintf(outpath, opn, "%s/.config/gcc-notch/stats-%s.csv", h ? h : ".", ts);
+  eng_config_path(outpath, opn, "stats-%s.csv", ts);
   FILE *f = fopen(outpath, "w");
   if (!f)
     return false;
@@ -218,11 +227,12 @@ static bool export_stats_csv(char *outpath, size_t opn, const long *rh_when,
   fprintf(f, "# generated,%ld\n", (long)now);
   fprintf(f, "# lifetime_button_presses,%ld\n", eng_stats_presses());
   fprintf(f, "# lifetime_input_events,%ld\n", eng_stats_events());
-  fprintf(f, "# dpad_up,%ld\n# dpad_down,%ld\n# dpad_left,%ld\n# dpad_right,%ld\n",
+  fprintf(f,
+          "# dpad_up,%ld\n# dpad_down,%ld\n# dpad_left,%ld\n# dpad_right,%ld\n",
           eng_stats_dpad_count(0), eng_stats_dpad_count(1),
           eng_stats_dpad_count(2), eng_stats_dpad_count(3));
-  fprintf(f, "# runs,%d\n# best_presses,%ld\n# worst_presses,%ld\n", a.n, a.best,
-          a.worst);
+  fprintf(f, "# runs,%d\n# best_presses,%ld\n# worst_presses,%ld\n", a.n,
+          a.best, a.worst);
   fprintf(f, "# avg_presses,%.1f\n# median_presses,%.0f\n", a.avg, a.median);
   fprintf(f, "# total_run_time_ms,%ld\n# avg_apm,%.1f\n# best_apm,%.1f\n",
           a.total_ms, a.avg_apm, a.best_apm);
@@ -249,13 +259,12 @@ static bool export_stats_csv(char *outpath, size_t opn, const long *rh_when,
 
 /* path for a single run's export, named by its timestamp */
 static void run_export_path(char *b, size_t n, const char *ext, long when) {
-  const char *h = getenv("HOME");
   time_t w = (time_t)when;
   struct tm *tv = localtime(&w);
   char ts[32] = "run";
   if (tv)
     strftime(ts, sizeof ts, "%Y%m%d-%H%M%S", tv);
-  snprintf(b, n, "%s/.config/gcc-notch/run-%s.%s", h ? h : ".", ts, ext);
+  eng_config_path(b, n, "run-%s.%s", ts, ext);
 }
 
 /* one run -> CSV (single row, plus a per-button section when available) */
@@ -305,7 +314,7 @@ static bool export_run_png(char *outpath, size_t opn, int idx1, long when,
     GenTextureMipmaps(&hb.texture);
     SetTextureFilter(hb.texture, TEXTURE_FILTER_TRILINEAR);
   }
-#define TT(f, s, x, y, sz, c)                                                   \
+#define TT(f, s, x, y, sz, c)                                                  \
   DrawTextEx(f, s, (Vector2){(x) * S, (y) * S}, (sz) * S, (sz) * S / 16.0f, c)
 
   RenderTexture2D rt = LoadRenderTexture(IW, IH);
@@ -359,6 +368,16 @@ static void card(Rectangle r) {
   DrawRectangleRounded(r, 0.045f, 8, PANEL);
   DrawRectangleRoundedLinesEx(r, 0.045f, 8, 1.0f, LINE);
 }
+
+/* dim the screen and draw a centered modal card; returns its rect */
+static Rectangle modal_box(float w, float h, float rnd, Color accent) {
+  DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
+  Rectangle box = {(W - w) / 2.0f, (H - h) / 2.0f, w, h};
+  DrawRectangleRounded(box, rnd, 10, PANEL);
+  DrawRectangleRoundedLinesEx(box, rnd, 10, 1.0f, Fade(accent, 0.6f));
+  return box;
+}
+
 /* section heading: a small accent bar + label */
 static void section_title(const char *s, float x, float y) {
   DrawRectangleRounded((Rectangle){x, y + 3, 3, 14}, 1.0f, 4, ACCENT);
@@ -559,7 +578,8 @@ static int run_daemon(const char *devpath) {
 
 /* ---- skinned stream viewer -------------------------------------------- */
 static void draw_stream_view(int bg, bool show_hint) {
-  /* the window is resized to the skin in the viewer, so draw to its live size */
+  /* the window is resized to the skin in the viewer, so draw to its live size
+   */
   int ww = GetScreenWidth(), wh = GetScreenHeight();
   Color bgc = bg == 1   ? (Color){0, 177, 64, 255}
               : bg == 2 ? (Color){255, 0, 255, 255}
@@ -612,8 +632,45 @@ static void fit_window_to_skin(void) {
   SetWindowSize(g_winw, g_winh);
 }
 
+/* viewer hotkeys shared by the in-window stream view and the standalone viewer
+ * process: cycle/reload skins, change background, toggle
+ * values/hint/border,
+ * persisting the viewer prefs on every change */
+static void viewer_hotkeys(int *bg, bool *bl, bool *sv, bool *hp) {
+  if (IsKeyPressed(KEY_K)) {
+    skin_next();
+    fit_window_to_skin();
+  }
+  if (IsKeyPressed(KEY_R)) {
+    skin_reload();
+    fit_window_to_skin();
+  }
+  if (IsKeyPressed(KEY_B)) {
+    *bg = (*bg + 1) % 3;
+    viewer_save(*bg, *bl, *sv, *hp);
+  }
+  if (IsKeyPressed(KEY_N)) {
+    *sv = !*sv;
+    skin_set_values(*sv);
+    viewer_save(*bg, *bl, *sv, *hp);
+  }
+  if (IsKeyPressed(KEY_H)) {
+    *hp = !*hp;
+    viewer_save(*bg, *bl, *sv, *hp);
+  }
+  if (IsKeyPressed(KEY_F)) {
+    *bl = !*bl;
+    if (*bl)
+      SetWindowState(FLAG_WINDOW_UNDECORATED);
+    else
+      ClearWindowState(FLAG_WINDOW_UNDECORATED);
+    viewer_save(*bg, *bl, *sv, *hp);
+  }
+}
+
 /* dedicated viewer process: no controls, follows the device the control
-   process publishes (physical when idle, virtual remap mirror when remapping) */
+   process publishes (physical when idle, virtual remap mirror when remapping)
+ */
 static void run_viewer_loop(void) {
   SetWindowTitle("GCC Notch Viewer");
   skin_set_remap_display(false); /* show the source device's raw values */
@@ -649,35 +706,7 @@ static void run_viewer_loop(void) {
     Vector2 md = GetMouseDelta();
     if (md.x != 0.0f || md.y != 0.0f)
       enter = GetTime();
-    if (IsKeyPressed(KEY_K)) {
-      skin_next();
-      fit_window_to_skin();
-    }
-    if (IsKeyPressed(KEY_R)) {
-      skin_reload();
-      fit_window_to_skin();
-    }
-    if (IsKeyPressed(KEY_B)) {
-      bg = (bg + 1) % 3;
-      viewer_save(bg, bl, sv, hp);
-    }
-    if (IsKeyPressed(KEY_N)) {
-      sv = !sv;
-      skin_set_values(sv);
-      viewer_save(bg, bl, sv, hp);
-    }
-    if (IsKeyPressed(KEY_H)) {
-      hp = !hp;
-      viewer_save(bg, bl, sv, hp);
-    }
-    if (IsKeyPressed(KEY_F)) {
-      bl = !bl;
-      if (bl)
-        SetWindowState(FLAG_WINDOW_UNDECORATED);
-      else
-        ClearWindowState(FLAG_WINDOW_UNDECORATED);
-      viewer_save(bg, bl, sv, hp);
-    }
+    viewer_hotkeys(&bg, &bl, &sv, &hp);
     if (IsKeyPressed(KEY_V) || IsKeyPressed(KEY_ESCAPE))
       break;
     BeginDrawing();
@@ -705,7 +734,8 @@ int main(int argc, char **argv) {
   /* no HIGHDPI: displays here run at scale 1.0 (render == screen), so it buys
      nothing and triggers a resize feedback fight with the compositor.
      The editor scales to fit and is resizable; the viewer is locked to the
-     skin's exact size (non-resizable) so OBS never sees background around it. */
+     skin's exact size (non-resizable) so OBS never sees background around it.
+   */
   unsigned cfgflags = FLAG_VSYNC_HINT;
   if (!viewer_proc)
     cfgflags |= FLAG_WINDOW_RESIZABLE;
@@ -759,7 +789,8 @@ int main(int argc, char **argv) {
 
   eng_load_cfg();
   eng_open(devpath);
-  eng_io_start(); /* poll/remap on a background thread, immune to render stalls */
+  eng_io_start(); /* poll/remap on a background thread, immune to render stalls
+                   */
   skin_load_all();
 
   /* standalone viewer process: just the overlay, driven by the control app */
@@ -788,13 +819,12 @@ int main(int argc, char **argv) {
   char name_buf[64] = "";
 
   /* run tracking, driven by dusklight's LiveSplit commands */
-#define RUN_HIST 200
   long rh_when[RUN_HIST], rh_ms[RUN_HIST], rh_pr[RUN_HIST];
-  int rh_n = 0;                         /* runs held, newest at rh_n-1 */
-  long ls_seen_start = ls_start_seq();  /* ignore any pre-existing run */
+  int rh_n = 0;                        /* runs held, newest at rh_n-1 */
+  long ls_seen_start = ls_start_seq(); /* ignore any pre-existing run */
   long ls_seen_end = ls_end_seq();
-  long run_base = 0;     /* eng_stats_presses() snapshot at run start */
-  bool run_live = false; /* a run is currently in progress */
+  long run_base = 0;             /* eng_stats_presses() snapshot at run start */
+  bool run_live = false;         /* a run is currently in progress */
   long last_pr = 0, last_ms = 0; /* most recent finished run, for display */
 
   /* per-GameCube-button snapshot, for the per-run breakdown */
@@ -830,16 +860,7 @@ int main(int argc, char **argv) {
     if (f) {
       long w, g, pr;
       while (fscanf(f, "%ld %ld %ld", &w, &g, &pr) == 3) {
-        if (rh_n == RUN_HIST) {
-          memmove(rh_when, rh_when + 1, (RUN_HIST - 1) * sizeof(long));
-          memmove(rh_ms, rh_ms + 1, (RUN_HIST - 1) * sizeof(long));
-          memmove(rh_pr, rh_pr + 1, (RUN_HIST - 1) * sizeof(long));
-          rh_n--;
-        }
-        rh_when[rh_n] = w;
-        rh_ms[rh_n] = g;
-        rh_pr[rh_n] = pr;
-        rh_n++;
+        push_run(rh_when, rh_ms, rh_pr, &rh_n, w, g, pr);
       }
       fclose(f);
       if (rh_n > 0) {
@@ -862,7 +883,8 @@ int main(int argc, char **argv) {
   double stream_enter = GetTime();
 
   while (!WindowShouldClose()) {
-    publish_viewer_src(); /* keep any viewer window pointed at the right device */
+    publish_viewer_src(); /* keep any viewer window pointed at the right device
+                           */
 
     /* track LiveSplit run edges: snapshot presses at start, bank them at end */
     {
@@ -887,19 +909,12 @@ int main(int argc, char **argv) {
           last_peak_apm = run_peak_apm;
           for (int i = 0; i < eng_btnmap_total() && i < 16; i++) {
             int code = eng_gc_code(i);
-            last_key[i] = (code >= 0 ? eng_stats_key(code) : 0) - run_base_key[i];
+            last_key[i] =
+                (code >= 0 ? eng_stats_key(code) : 0) - run_base_key[i];
           }
-          append_run_log(time(NULL), last_ms, last_pr);
-          if (rh_n == RUN_HIST) {
-            memmove(rh_when, rh_when + 1, (RUN_HIST - 1) * sizeof(long));
-            memmove(rh_ms, rh_ms + 1, (RUN_HIST - 1) * sizeof(long));
-            memmove(rh_pr, rh_pr + 1, (RUN_HIST - 1) * sizeof(long));
-            rh_n--;
-          }
-          rh_when[rh_n] = time(NULL);
-          rh_ms[rh_n] = last_ms;
-          rh_pr[rh_n] = last_pr;
-          rh_n++;
+          long now = time(NULL);
+          append_run_log(now, last_ms, last_pr);
+          push_run(rh_when, rh_ms, rh_pr, &rh_n, now, last_ms, last_pr);
         }
       }
     }
@@ -942,35 +957,7 @@ int main(int argc, char **argv) {
       Vector2 md = GetMouseDelta();
       if (md.x != 0.0f || md.y != 0.0f)
         stream_enter = GetTime();
-      if (IsKeyPressed(KEY_B)) {
-        stream_bg = (stream_bg + 1) % 3;
-        viewer_save(stream_bg, borderless, show_values, hint_pin);
-      }
-      if (IsKeyPressed(KEY_K)) {
-        skin_next();
-        fit_window_to_skin();
-      }
-      if (IsKeyPressed(KEY_R)) {
-        skin_reload();
-        fit_window_to_skin();
-      }
-      if (IsKeyPressed(KEY_H)) {
-        hint_pin = !hint_pin;
-        viewer_save(stream_bg, borderless, show_values, hint_pin);
-      }
-      if (IsKeyPressed(KEY_N)) {
-        show_values = !show_values;
-        skin_set_values(show_values);
-        viewer_save(stream_bg, borderless, show_values, hint_pin);
-      }
-      if (IsKeyPressed(KEY_F)) {
-        borderless = !borderless;
-        if (borderless)
-          SetWindowState(FLAG_WINDOW_UNDECORATED);
-        else
-          ClearWindowState(FLAG_WINDOW_UNDECORATED);
-        viewer_save(stream_bg, borderless, show_values, hint_pin);
-      }
+      viewer_hotkeys(&stream_bg, &borderless, &show_values, &hint_pin);
       if (IsKeyPressed(KEY_ESCAPE))
         stream_view = false;
     } else {
@@ -1289,8 +1276,7 @@ int main(int argc, char **argv) {
 
     /* row4: stream viewer + skin selector */
     float row4 = cp.y + 168;
-    if (GuiButton((Rectangle){cp.x + 16, row4, 230, 30},
-                  "Open Viewer Window"))
+    if (GuiButton((Rectangle){cp.x + 16, row4, 230, 30}, "Open Viewer Window"))
       launch_viewer_window(); /* separate process; V still opens it in-window */
     txt(FONT, "Skin", cp.x + 258, row4 + 8, 13, DIM);
     /* dropdown drawn after everything else so its open list overlays cleanly */
@@ -1319,10 +1305,7 @@ int main(int argc, char **argv) {
 
     /* ---- calibration overlay ------------------------------------------- */
     if (eng_cal_active()) {
-      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
-      Rectangle box = {W / 2.0f - 250, H / 2.0f - 120, 500, 240};
-      DrawRectangleRounded(box, 0.06f, 10, PANEL);
-      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      Rectangle box = modal_box(500, 240, 0.06f, ACCENT);
 
       const char *sn = eng_cal_stick() == 0 ? "Control Stick" : "C-Stick";
       int ph = eng_cal_phase();
@@ -1362,10 +1345,7 @@ int main(int argc, char **argv) {
 
     /* ---- trigger calibration overlay ----------------------------------- */
     if (eng_trig_active()) {
-      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
-      Rectangle box = {W / 2.0f - 250, H / 2.0f - 130, 500, 260};
-      DrawRectangleRounded(box, 0.06f, 10, PANEL);
-      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      Rectangle box = modal_box(500, 260, 0.06f, ACCENT);
 
       int ph = eng_trig_phase();
       txt(FONTB, "Trigger Calibration", box.x + 28, box.y + 22, 22, TXT);
@@ -1410,10 +1390,8 @@ int main(int argc, char **argv) {
 
     /* ---- button-mapping wizard ----------------------------------------- */
     if (eng_btnmap_active()) {
-      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
-      Rectangle box = {W / 2.0f - 230, H / 2.0f - 110, 460, 220};
-      DrawRectangleRounded(box, 0.06f, 10, PANEL);
-      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      Rectangle box = modal_box(460, 220, 0.06f, ACCENT);
+
       txt(FONTB, "Map Buttons", box.x + 28, box.y + 22, 22, TXT);
       txt(FONT,
           TextFormat("Step %d / %d", eng_btnmap_index() + 1,
@@ -1444,10 +1422,8 @@ int main(int argc, char **argv) {
 
     /* ---- new-profile modal --------------------------------------------- */
     if (name_modal) {
-      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
-      Rectangle box = {W / 2.0f - 220, H / 2.0f - 90, 440, 180};
-      DrawRectangleRounded(box, 0.06f, 10, PANEL);
-      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      Rectangle box = modal_box(440, 180, 0.06f, ACCENT);
+
       txt(FONTB, "New Profile", box.x + 28, box.y + 22, 22, TXT);
       txt(FONT, "Saves the current calibration under this name:", box.x + 28,
           box.y + 56, 14, DIM);
@@ -1468,10 +1444,8 @@ int main(int argc, char **argv) {
 
     /* ---- reset-calibration confirm ------------------------------------- */
     if (confirm_reset) {
-      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
-      Rectangle box = {W / 2.0f - 220, H / 2.0f - 80, 440, 160};
-      DrawRectangleRounded(box, 0.06f, 10, PANEL);
-      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(BAD, 0.6f));
+      Rectangle box = modal_box(440, 160, 0.06f, BAD);
+
       txt(FONTB, "Clear Calibration?", box.x + 28, box.y + 22, 22, TXT);
       txt(FONT,
           TextFormat("This wipes calibration in profile \"%s\".",
@@ -1487,10 +1461,8 @@ int main(int argc, char **argv) {
 
     /* ---- statistics overlay -------------------------------------------- */
     if (show_stats) {
-      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
-      Rectangle box = {W / 2.0f - 350, H / 2.0f - 280, 700, 560};
-      DrawRectangleRounded(box, 0.03f, 10, PANEL);
-      DrawRectangleRoundedLinesEx(box, 0.03f, 10, 1.0f, Fade(ACCENT, 0.6f));
+      Rectangle box = modal_box(700, 560, 0.03f, ACCENT);
+
       float bx = box.x, by = box.y;
       float colA = bx + 28, colB = bx + 252, colC = bx + 480;
 
@@ -1528,12 +1500,12 @@ int main(int argc, char **argv) {
       }
 
       /* inset panels behind the three content columns for structure */
-      DrawRectangleRounded((Rectangle){colA - 14, by + 126, 210, 250}, 0.045f, 6,
-                           PANEL2);
-      DrawRectangleRounded((Rectangle){colB - 14, by + 126, 214, 358}, 0.045f, 6,
-                           PANEL2);
-      DrawRectangleRounded((Rectangle){colC - 14, by + 126, 210, 358}, 0.045f, 6,
-                           PANEL2);
+      DrawRectangleRounded((Rectangle){colA - 14, by + 126, 210, 250}, 0.045f,
+                           6, PANEL2);
+      DrawRectangleRounded((Rectangle){colB - 14, by + 126, 214, 358}, 0.045f,
+                           6, PANEL2);
+      DrawRectangleRounded((Rectangle){colC - 14, by + 126, 210, 358}, 0.045f,
+                           6, PANEL2);
 
       /* --- column A: lifetime button breakdown + D-pad --- */
       section_title("Buttons (lifetime)", colA, by + 132);
@@ -1573,11 +1545,11 @@ int main(int argc, char **argv) {
 
       /* --- column B: current/last run, fed by dusklight --- */
       section_title("Current Run", colB, by + 132);
-      const char *lst = !ls_listening()  ? "server off"
+      const char *lst = !ls_listening()   ? "server off"
                         : !ls_connected() ? "waiting for dusklight"
                         : ls_run_active() ? "RUN ACTIVE"
                                           : "connected (idle)";
-      Color lsc = !ls_listening()  ? BAD
+      Color lsc = !ls_listening()   ? BAD
                   : !ls_connected() ? WARN
                   : ls_run_active() ? GOOD
                                     : DIM;
@@ -1605,9 +1577,9 @@ int main(int argc, char **argv) {
         float byy = by + 332;
         for (int i = 0; i < eng_btnmap_total(); i++) {
           int code = eng_gc_code(i);
-          long v = run_live ? (code >= 0 ? eng_stats_key(code) : 0) -
-                                  run_base_key[i]
-                            : last_key[i];
+          long v = run_live
+                       ? (code >= 0 ? eng_stats_key(code) : 0) - run_base_key[i]
+                       : last_key[i];
           txt(FONT, eng_gc_name(i), colB, byy, 13, TXT);
           txt(FONT, TextFormat("%ld", v), colB + 96, byy, 13, DIM);
           byy += 18;
@@ -1704,10 +1676,8 @@ int main(int argc, char **argv) {
 
     /* ---- reset-statistics confirm -------------------------------------- */
     if (confirm_stats_reset) {
-      DrawRectangle(0, 0, W, H, Fade((Color){5, 6, 9, 255}, 0.72f));
-      Rectangle box = {W / 2.0f - 220, H / 2.0f - 80, 440, 160};
-      DrawRectangleRounded(box, 0.06f, 10, PANEL);
-      DrawRectangleRoundedLinesEx(box, 0.06f, 10, 1.0f, Fade(BAD, 0.6f));
+      Rectangle box = modal_box(440, 160, 0.06f, BAD);
+
       txt(FONTB, "Reset Statistics?", box.x + 28, box.y + 22, 22, TXT);
       txt(FONT, "This clears all collected input counts.", box.x + 28,
           box.y + 56, 14, DIM);
