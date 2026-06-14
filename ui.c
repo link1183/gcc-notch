@@ -17,8 +17,8 @@ static const Color PANEL = {25, 28, 38, 255};    /* card background       */
 static const Color PANEL2 = {19, 21, 29, 255};   /* inset / plot bg       */
 static const Color LINE = {42, 47, 61, 255};     /* borders / separators  */
 static const Color GRID = {38, 43, 56, 255};     /* faint grid            */
-static const Color TXT = {206, 212, 224, 255};   /* primary text          */
-static const Color DIM = {120, 130, 150, 255};   /* secondary text        */
+static const Color TXT = {214, 220, 232, 255};   /* primary text          */
+static const Color DIM = {158, 169, 189, 255};   /* secondary text        */
 static const Color ACCENT = {91, 157, 255, 255}; /* blue accent           */
 static const Color GOOD = {70, 214, 160, 255};   /* green                 */
 static const Color BAD = {255, 93, 108, 255};    /* red                   */
@@ -28,7 +28,8 @@ static Font FONT, FONTB; /* regular + semibold */
 
 /* ---- text helpers ------------------------------------------------------ */
 static void txt(Font f, const char *s, float x, float y, float sz, Color c) {
-  DrawTextEx(f, s, (Vector2){x, y}, sz, sz / 16.0f, c);
+  /* snap to whole pixels so glyph edges stay crisp */
+  DrawTextEx(f, s, (Vector2){roundf(x), roundf(y)}, sz, sz / 16.0f, c);
 }
 
 /* ---- shape helpers ----------------------------------------------------- */
@@ -36,6 +37,13 @@ static void card(Rectangle r) {
   DrawRectangleRounded(r, 0.045f, 8, PANEL);
   DrawRectangleRoundedLinesEx(r, 0.045f, 8, 1.0f, LINE);
 }
+/* section heading: a small accent bar + label */
+static void section_title(const char *s, float x, float y) {
+  DrawRectangleRounded((Rectangle){x, y + 3, 3, 14}, 1.0f, 4, ACCENT);
+  DrawTextEx(FONTB, s, (Vector2){roundf(x + 11), roundf(y)}, 17, 17 / 16.0f,
+             TXT);
+}
+
 /* soft glowing dot: a halo behind a solid core */
 static void glow_dot(Vector2 p, float r, Color c) {
   DrawCircleV(p, r * 3.2f, Fade(c, 0.10f));
@@ -93,7 +101,7 @@ static void trail_draw(Rectangle a, int s, bool cal) {
 
 static void draw_stick(Rectangle outer, const char *title, int stick) {
   card(outer);
-  txt(FONTB, title, outer.x + 16, outer.y + 12, 17, TXT);
+  section_title(title, outer.x + 16, outer.y + 12);
 
   /* plot area inset below the title (leaves room for the diag slider) */
   Rectangle a = {outer.x + 16, outer.y + 40, outer.width - 32,
@@ -170,12 +178,17 @@ static void draw_stick(Rectangle outer, const char *title, int stick) {
   }
   glow_dot(rts(a, rx, ry), 5.0f, BAD);
 
-  /* live axis values, bottom-left of the plot */
-  txt(FONT, TextFormat("raw  %d, %d", rx, ry), a.x + 8, a.y + a.height - 40, 12,
-      Fade(BAD, 0.95f));
+  /* live axis values, bottom-left, on a backing so they read over the grid */
+  const char *r1 = TextFormat("raw  %d, %d", rx, ry);
+  const char *r2 = cal ? TextFormat("out  %d, %d", ox, oy) : "";
+  float w1 = MeasureTextEx(FONT, r1, 13, 13 / 16.0f).x;
+  float w2 = cal ? MeasureTextEx(FONT, r2, 13, 13 / 16.0f).x : 0;
+  float bw = (w1 > w2 ? w1 : w2) + 14, bh = cal ? 42 : 23;
+  Rectangle rb = {a.x + 6, a.y + a.height - bh - 6, bw, bh};
+  DrawRectangleRounded(rb, 0.28f, 6, Fade(PANEL2, 0.85f));
+  txt(FONT, r1, rb.x + 7, rb.y + 4, 13, BAD);
   if (cal)
-    txt(FONT, TextFormat("out  %d, %d", ox, oy), a.x + 8, a.y + a.height - 22,
-        12, Fade(GOOD, 0.95f));
+    txt(FONT, r2, rb.x + 7, rb.y + 21, 13, GOOD);
 
   /* per-stick diagonal slider under the plot */
   float dv = (float)eng_get_diag(stick);
@@ -242,10 +255,18 @@ int main(int argc, char **argv) {
   /* crisp TTF; fall back to the built-in font if unavailable */
   const char *reg = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf";
   const char *bld = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-SemiBold.ttf";
-  FONT = FileExists(reg) ? LoadFontEx(reg, 48, NULL, 0) : GetFontDefault();
-  FONTB = FileExists(bld) ? LoadFontEx(bld, 48, NULL, 0) : FONT;
-  SetTextureFilter(FONT.texture, TEXTURE_FILTER_BILINEAR);
-  SetTextureFilter(FONTB.texture, TEXTURE_FILTER_BILINEAR);
+  bool gotreg = FileExists(reg), gotbld = FileExists(bld);
+  /* large atlas + mipmaps + trilinear keeps small text sharp when downscaled */
+  FONT = gotreg ? LoadFontEx(reg, 64, NULL, 0) : GetFontDefault();
+  FONTB = gotbld ? LoadFontEx(bld, 64, NULL, 0) : FONT;
+  if (gotreg) {
+    GenTextureMipmaps(&FONT.texture);
+    SetTextureFilter(FONT.texture, TEXTURE_FILTER_TRILINEAR);
+  }
+  if (gotbld) {
+    GenTextureMipmaps(&FONTB.texture);
+    SetTextureFilter(FONTB.texture, TEXTURE_FILTER_TRILINEAR);
+  }
 
   /* raygui dark theme */
   GuiSetFont(FONT);
@@ -373,7 +394,7 @@ int main(int argc, char **argv) {
     /* ---- right column: buttons & axes ---------------------------------- */
     Rectangle bpanel = {684, 84, W - 684 - 28, 300};
     card(bpanel);
-    txt(FONTB, "Buttons", bpanel.x + 16, bpanel.y + 12, 17, TXT);
+    section_title("Buttons", bpanel.x + 16, bpanel.y + 12);
     int codes[64];
     int n = eng_list_keys(codes, 64);
     int colw = (int)(bpanel.width - 32) / 2;
@@ -396,7 +417,7 @@ int main(int argc, char **argv) {
 
     Rectangle apanel = {684, 400, W - 684 - 28, 220};
     card(apanel);
-    txt(FONTB, "Axes / Triggers", apanel.x + 16, apanel.y + 12, 17, TXT);
+    section_title("Axes / Triggers", apanel.x + 16, apanel.y + 12);
     int ac[16];
     int m = eng_list_extra_abs(ac, 16);
     float ty = apanel.y + 44;
@@ -440,7 +461,7 @@ int main(int argc, char **argv) {
     /* ---- controls panel ------------------------------------------------ */
     Rectangle cp = {28, 462, 636, 158};
     card(cp);
-    txt(FONTB, "Controls", cp.x + 16, cp.y + 12, 17, TXT);
+    section_title("Controls", cp.x + 16, cp.y + 12);
 
     float row1 = cp.y + 44;
     if (GuiButton((Rectangle){cp.x + 16, row1, 150, 34},
