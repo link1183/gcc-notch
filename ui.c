@@ -1,6 +1,7 @@
 #include "raylib.h"
 #define RAYGUI_IMPLEMENTATION
 #include "engine.h"
+#include "skin.h"
 #include <math.h>
 #include <raygui.h>
 #include <signal.h>
@@ -235,160 +236,30 @@ static int run_daemon(const char *devpath) {
   return 0;
 }
 
-/* ---- GameCube stream viewer ------------------------------------------- */
-static void gc_button(Vector2 c, float r, const char *label, Color col,
-                      bool on) {
-  if (on) {
-    DrawCircleV(c, r * 1.22f, Fade(col, 0.28f));
-    DrawCircleV(c, r, col);
-  } else {
-    DrawCircleV(c, r, Fade(col, 0.16f));
-    DrawCircleLinesV(c, r, Fade(col, 0.85f));
-  }
-  if (label && *label) {
-    float fs = r * 0.85f;
-    if (fs > 24)
-      fs = 24;
-    if (fs < 11)
-      fs = 11;
-    Vector2 m = MeasureTextEx(FONTB, label, fs, fs / 16.0f);
-    Color tc = on ? (Color){10, 12, 16, 255} : Fade(col, 0.95f);
-    DrawTextEx(FONTB, label,
-               (Vector2){roundf(c.x - m.x / 2), roundf(c.y - m.y / 2)}, fs,
-               fs / 16.0f, tc);
-  }
-}
-
-static void gc_capsule(Rectangle r, const char *label, Color col, bool on) {
-  if (on)
-    DrawRectangleRounded(r, 1.0f, 8, col);
-  else {
-    DrawRectangleRounded(r, 1.0f, 8, Fade(col, 0.16f));
-    DrawRectangleRoundedLinesEx(r, 1.0f, 8, 1.5f, Fade(col, 0.85f));
-  }
-  Vector2 m = MeasureTextEx(FONTB, label, 17, 17 / 16.0f);
-  DrawTextEx(FONTB, label,
-             (Vector2){roundf(r.x + r.width / 2 - m.x / 2),
-                       roundf(r.y + r.height / 2 - m.y / 2)},
-             17, 17 / 16.0f, on ? (Color){10, 12, 16, 255} : Fade(col, 0.95f));
-}
-
-static void gc_trigger(Rectangle r, const char *label, Color col, float frac,
-                       bool full) {
-  DrawRectangleRounded(r, 1.0f, 8, Fade(col, 0.12f));
-  if (frac > 0.001f) {
-    Rectangle f = {r.x, r.y, r.width * frac, r.height};
-    DrawRectangleRounded(f, 1.0f, 8, Fade(col, full ? 1.0f : 0.55f));
-  }
-  DrawRectangleRoundedLinesEx(r, 1.0f, 8, full ? 2.5f : 1.5f,
-                              Fade(col, full ? 1.0f : 0.7f));
-  txt(FONTB, label, r.x - 26, r.y + r.height / 2 - 9, 18, col);
-  const char *p = TextFormat("%d%%", (int)(frac * 100 + 0.5f));
-  Vector2 m = MeasureTextEx(FONT, p, 13, 13 / 16.0f);
-  txt(FONT, p, r.x + r.width / 2 - m.x / 2, r.y + r.height / 2 - 7, 13,
-      full ? (Color){10, 12, 16, 255} : Fade(WHITE, 0.85f));
-}
-
-static void gc_stick_view(Vector2 c, float r, int vx, int vy, Color rim,
-                          Color dot, const char *label) {
-  DrawCircleV(c, r, Fade(rim, 0.10f));
-  DrawCircleLinesV(c, r, Fade(rim, 0.55f));
-  DrawCircleLinesV(c, r * 0.5f, Fade(rim, 0.25f));
-  float ox = (vx - 128) / 127.0f, oy = (vy - 128) / 127.0f;
-  ox = ox < -1 ? -1 : ox > 1 ? 1 : ox;
-  oy = oy < -1 ? -1 : oy > 1 ? 1 : oy;
-  Vector2 p = {c.x + ox * r * 0.82f, c.y + oy * r * 0.82f};
-  DrawLineEx(c, p, 2.0f, Fade(dot, 0.35f));
-  DrawCircleV(p, r * 3.2f / 18.0f, Fade(dot, 0.25f));
-  DrawCircleV(p, r * 2.4f / 18.0f, dot);
-  if (label && *label) {
-    Vector2 m = MeasureTextEx(FONT, label, 14, 14 / 16.0f);
-    txt(FONT, label, c.x - m.x / 2, c.y + r + 8, 14, Fade(rim, 0.9f));
-  }
-}
-
-static void gc_dpad(Vector2 c, float a) {
-  int dx, dy;
-  eng_dpad(&dx, &dy);
-  Color base = {150, 158, 176, 255};
-  float w = a * 0.74f;
-  Rectangle up = {c.x - w / 2, c.y - a, w, a};
-  Rectangle dn = {c.x - w / 2, c.y, w, a};
-  Rectangle lf = {c.x - a, c.y - w / 2, a, w};
-  Rectangle rt = {c.x, c.y - w / 2, a, w};
-  DrawRectangleRounded(lf, 0.2f, 4, dx < 0 ? base : Fade(base, 0.16f));
-  DrawRectangleRounded(rt, 0.2f, 4, dx > 0 ? base : Fade(base, 0.16f));
-  DrawRectangleRounded(up, 0.2f, 4, dy < 0 ? base : Fade(base, 0.16f));
-  DrawRectangleRounded(dn, 0.2f, 4, dy > 0 ? base : Fade(base, 0.16f));
-  DrawRectangleRounded((Rectangle){c.x - w / 2, c.y - w / 2, w, w}, 0.2f, 4,
-                       Fade(base, 0.16f));
-}
-
+/* ---- skinned stream viewer -------------------------------------------- */
 static void draw_stream_view(int bg, bool show_hint) {
   Color bgc = bg == 1   ? (Color){0, 177, 64, 255}
               : bg == 2 ? (Color){255, 0, 255, 255}
                         : (Color){8, 8, 10, 255};
   ClearBackground(bgc);
 
-  bool cal = eng_has_cal();
-  const eng_stick_cal *c0 = eng_cal(0), *c1 = eng_cal(1);
-  int rx0 = eng_raw(c0->ax), ry0 = eng_raw(c0->ay), x0 = rx0, y0 = ry0;
-  int rx1 = eng_raw(c1->ax), ry1 = eng_raw(c1->ay), x1 = rx1, y1 = ry1;
-  if (cal) {
-    eng_remap_point(0, rx0, ry0, &x0, &y0);
-    eng_remap_point(1, rx1, ry1, &x1, &y1);
+  if (skin_have()) {
+    skin_draw(W, H);
+    if (show_hint) {
+      txt(FONT, TextFormat("skin: %s", skin_name(skin_current())), 24, 24, 14,
+          Fade(WHITE, 0.6f));
+      txt(FONT, "V exit    K skin    B background    F borderless", 24, H - 30,
+          14, Fade(WHITE, 0.5f));
+    }
+  } else {
+    const char *m1 = "No skins found.";
+    const char *m2 =
+        "Drop a skin folder (with skin.xml) into ~/.config/gcc-notch/skins/";
+    txt(FONTB, m1, W / 2 - MeasureTextEx(FONTB, m1, 22, 22 / 16.0f).x / 2,
+        H / 2 - 30, 22, TXT);
+    txt(FONT, m2, W / 2 - MeasureTextEx(FONT, m2, 14, 14 / 16.0f).x / 2,
+        H / 2 + 4, 14, DIM);
   }
-
-  /* triggers (first two calibrated analog axes -> L, R) */
-  int tcodes[8], tn = 0, ac[16];
-  int m = eng_list_extra_abs(ac, 16);
-  for (int k = 0; k < m && tn < 8; k++)
-    if (eng_is_trig(ac[k]))
-      tcodes[tn++] = ac[k];
-  float lf = 0, rf = 0;
-  bool ld = eng_gc_pressed(5), rd = eng_gc_pressed(6);
-  if (tn > 0) {
-    int cd = tcodes[0], lo = eng_abs_min(cd), hi = eng_abs_max(cd);
-    if (hi > lo)
-      lf = (float)(eng_trig_out(cd, eng_raw(cd)) - lo) / (hi - lo);
-  }
-  if (tn > 1) {
-    int cd = tcodes[1], lo = eng_abs_min(cd), hi = eng_abs_max(cd);
-    if (hi > lo)
-      rf = (float)(eng_trig_out(cd, eng_raw(cd)) - lo) / (hi - lo);
-  }
-  if (ld && tn == 0)
-    lf = 1;
-  if (rd && tn < 2)
-    rf = 1;
-
-  Color grey = {175, 182, 198, 255};
-  gc_trigger((Rectangle){205, 116, 250, 34}, "L", grey, lf, ld || lf > 0.95f);
-  gc_trigger((Rectangle){630, 116, 250, 34}, "R", grey, rf, rd || rf > 0.95f);
-  gc_capsule((Rectangle){712, 250, 168, 28}, "Z", (Color){150, 120, 230, 255},
-             eng_gc_pressed(4));
-
-  gc_stick_view((Vector2){330, 392}, 100, x0, y0, grey, WHITE, "control");
-  gc_stick_view((Vector2){700, 548}, 64, x1, y1, (Color){245, 197, 66, 255},
-                (Color){245, 197, 66, 255}, "C-stick");
-  gc_dpad((Vector2){300, 612}, 26);
-
-  gc_button((Vector2){812, 380}, 46, "A", (Color){0, 180, 100, 255},
-            eng_gc_pressed(0));
-  gc_button((Vector2){744, 426}, 28, "B", (Color){222, 74, 74, 255},
-            eng_gc_pressed(1));
-  gc_button((Vector2){880, 372}, 30, "X", grey, eng_gc_pressed(2));
-  gc_button((Vector2){808, 306}, 30, "Y", grey, eng_gc_pressed(3));
-  gc_button((Vector2){530, 392}, 18, "", grey, eng_gc_pressed(7));
-  txt(FONT, "START", 530 - MeasureTextEx(FONT, "START", 12, 12 / 16.0f).x / 2,
-      392 + 24, 12, Fade(grey, 0.9f));
-
-  if (!eng_has_btnmap())
-    txt(FONT, "buttons not mapped - run \"Map Buttons\" in the main window", 24,
-        24, 14, Fade(WHITE, 0.6f));
-  if (show_hint)
-    txt(FONT, "V exit    B background    F borderless", 24, H - 30, 14,
-        Fade(WHITE, 0.5f));
 }
 
 int main(int argc, char **argv) {
@@ -407,7 +278,7 @@ int main(int argc, char **argv) {
   if (daemon_mode)
     return run_daemon(devpath);
 
-  SetConfigFlags(FLAG_MSAA_4X_HINT | FLAG_VSYNC_HINT);
+  SetConfigFlags(FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI);
   InitWindow(W, H, "GCC Notch Remapper");
   SetTargetFPS(240);
   SetExitKey(KEY_NULL); /* we handle Esc ourselves (modal cancel / quit) */
@@ -447,12 +318,15 @@ int main(int argc, char **argv) {
 
   eng_load_cfg();
   eng_open(devpath);
+  skin_load_all();
   if (auto_remap)
     eng_start_remap();
 
   /* profile dropdown + modal state (persist across frames) */
   int dd_idx = 0;
   bool dd_edit = false;
+  int sk_idx = 0;
+  bool sk_edit = false;
   bool name_modal = false, confirm_reset = false;
   char name_buf[64] = "";
 
@@ -474,6 +348,8 @@ int main(int argc, char **argv) {
     if (stream_view) {
       if (IsKeyPressed(KEY_B))
         stream_bg = (stream_bg + 1) % 3;
+      if (IsKeyPressed(KEY_K))
+        skin_next();
       if (IsKeyPressed(KEY_F)) {
         borderless = !borderless;
         if (borderless)
@@ -725,16 +601,37 @@ int main(int argc, char **argv) {
       txt(FONT, "(no profiles yet)", cp.x + 16, row3 + 6, 13, DIM);
     }
 
-    /* row4: stream viewer */
+    /* row4: stream viewer + skin selector */
     float row4 = cp.y + 168;
-    if (GuiButton((Rectangle){cp.x + 16, row4, 290, 30},
+    if (GuiButton((Rectangle){cp.x + 16, row4, 230, 30},
                   "Open Stream View  (V)")) {
       stream_view = true;
       stream_enter = GetTime();
     }
-    if (!eng_has_btnmap())
-      txt(FONT, "tip: Map Buttons first for the GameCube layout", cp.x + 320,
-          row4 + 8, 12, DIM);
+    txt(FONT, "Skin", cp.x + 258, row4 + 8, 13, DIM);
+    /* dropdown drawn after everything else so its open list overlays cleanly */
+    int skc = skin_count();
+    if (skc > 0) {
+      char items[1024];
+      items[0] = 0;
+      for (int i = 0; i < skc; i++) {
+        if (i)
+          strncat(items, ";", sizeof items - strlen(items) - 1);
+        strncat(items, skin_name(i), sizeof items - strlen(items) - 1);
+      }
+      if (!sk_edit)
+        sk_idx = skin_current() < 0 ? 0 : skin_current();
+      if (GuiDropdownBox((Rectangle){cp.x + 300, row4, cp.width - 316, 30},
+                         items, &sk_idx, sk_edit)) {
+        if (sk_edit) {
+          sk_edit = false;
+          skin_select(sk_idx);
+        } else
+          sk_edit = true;
+      }
+    } else {
+      txt(FONT, "(none installed)", cp.x + 300, row4 + 8, 13, DIM);
+    }
 
     /* ---- calibration overlay ------------------------------------------- */
     if (eng_cal_active()) {
@@ -906,6 +803,7 @@ int main(int argc, char **argv) {
   }
 
   eng_close();
+  skin_unload_all();
   CloseWindow();
   return 0;
 }
