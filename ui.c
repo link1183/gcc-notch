@@ -30,6 +30,7 @@ static const Color BAD = {255, 93, 108, 255};    /* red                   */
 static const Color WARN = {255, 196, 87, 255};   /* amber                 */
 
 static Font FONT, FONTB; /* regular + semibold */
+static char FONT_REG[512], FONT_BLD[512]; /* TTF paths, for hi-res PNG export */
 
 /* ---- text helpers ------------------------------------------------------ */
 static void txt(Font f, const char *s, float x, float y, float sz, Color c) {
@@ -281,16 +282,37 @@ static bool export_run_csv(char *outpath, size_t opn, int idx1, long when,
   return true;
 }
 
-/* one run -> a shareable PNG result card. Must run OUTSIDE BeginDrawing(). */
+/* one run -> a shareable PNG result card. Must run OUTSIDE BeginDrawing().
+   Rendered supersampled (S x) with fonts reloaded at a large base size so the
+   text stays crisp at the higher resolution. */
 static bool export_run_png(char *outpath, size_t opn, int idx1, long when,
                            long ms, long pr, const long *bykey, int nkey) {
   run_export_path(outpath, opn, "png", when);
-  int IW = 640, IH = bykey ? 392 : 248;
+  const float S = 3.0f; /* supersample factor */
+  int IW = (int)(640 * S), IH = (int)((bykey ? 392 : 248) * S);
+
+  /* crisp high-res fonts just for this image; fall back to the UI atlas */
+  Font hf = FONT, hb = FONTB;
+  bool fr = FONT_REG[0] && FileExists(FONT_REG);
+  bool fb = FONT_BLD[0] && FileExists(FONT_BLD);
+  if (fr) {
+    hf = LoadFontEx(FONT_REG, 192, NULL, 0);
+    GenTextureMipmaps(&hf.texture);
+    SetTextureFilter(hf.texture, TEXTURE_FILTER_TRILINEAR);
+  }
+  if (fb) {
+    hb = LoadFontEx(FONT_BLD, 192, NULL, 0);
+    GenTextureMipmaps(&hb.texture);
+    SetTextureFilter(hb.texture, TEXTURE_FILTER_TRILINEAR);
+  }
+#define TT(f, s, x, y, sz, c)                                                   \
+  DrawTextEx(f, s, (Vector2){(x) * S, (y) * S}, (sz) * S, (sz) * S / 16.0f, c)
+
   RenderTexture2D rt = LoadRenderTexture(IW, IH);
   BeginTextureMode(rt);
   ClearBackground((Color){18, 20, 28, 255});
-  DrawRectangle(0, 0, IW, 4, ACCENT);
-  DrawRectangleLinesEx((Rectangle){0, 0, (float)IW, (float)IH}, 1, LINE);
+  DrawRectangle(0, 0, IW, (int)(4 * S), ACCENT);
+  DrawRectangleLinesEx((Rectangle){0, 0, (float)IW, (float)IH}, S, LINE);
 
   char dt[32] = "";
   time_t w = (time_t)when;
@@ -299,35 +321,36 @@ static bool export_run_png(char *outpath, size_t opn, int idx1, long when,
     strftime(dt, sizeof dt, "%Y-%m-%d %H:%M", tv);
   double apm = ms ? pr * 60000.0 / ms : 0;
 
-  DrawTextEx(FONTB, TextFormat("Run #%d", idx1), (Vector2){28, 24}, 30,
-             30 / 16.0f, TXT);
-  DrawTextEx(FONT, dt, (Vector2){28, 62}, 16, 16 / 16.0f, DIM);
-  DrawTextEx(FONTB, fmt_ms(ms), (Vector2){28, 92}, 56, 56 / 16.0f, GOOD);
-  DrawTextEx(FONTB, TextFormat("%ld", pr), (Vector2){28, 168}, 30, 30 / 16.0f,
-             ACCENT);
-  DrawTextEx(FONT, "presses", (Vector2){28, 202}, 16, 16 / 16.0f, DIM);
-  DrawTextEx(FONTB, TextFormat("%.0f", apm), (Vector2){240, 168}, 30,
-             30 / 16.0f, TXT);
-  DrawTextEx(FONT, "apm", (Vector2){240, 202}, 16, 16 / 16.0f, DIM);
+  TT(hb, TextFormat("Run #%d", idx1), 28, 24, 30, TXT);
+  TT(hf, dt, 28, 62, 16, DIM);
+  TT(hb, fmt_ms(ms), 28, 92, 56, GOOD);
+  TT(hb, TextFormat("%ld", pr), 28, 168, 30, ACCENT);
+  TT(hf, "presses", 28, 202, 16, DIM);
+  TT(hb, TextFormat("%.0f", apm), 240, 168, 30, TXT);
+  TT(hf, "apm", 240, 202, 16, DIM);
 
   if (bykey) {
-    DrawRectangle(28, 236, IW - 56, 1, LINE);
+    DrawRectangle((int)(28 * S), (int)(236 * S), IW - (int)(56 * S), (int)S,
+                  LINE);
     for (int i = 0; i < nkey; i++) {
       float x = 28 + (i % 4) * 150.0f, y = 252 + (i / 4) * 30.0f;
-      DrawTextEx(FONTB, eng_gc_name(i), (Vector2){x, y}, 18, 18 / 16.0f, TXT);
-      DrawTextEx(FONT, TextFormat("%ld", bykey[i]), (Vector2){x + 50, y}, 18,
-                 18 / 16.0f, DIM);
+      TT(hb, eng_gc_name(i), x, y, 18, TXT);
+      TT(hf, TextFormat("%ld", bykey[i]), x + 50, y, 18, DIM);
     }
   }
-  DrawTextEx(FONT, "gcc-notch", (Vector2){IW - 104, IH - 26}, 14, 14 / 16.0f,
-             Fade(DIM, 0.6f));
+  TT(hf, "gcc-notch", 640 - 104, (bykey ? 392 : 248) - 26, 14, Fade(DIM, 0.6f));
   EndTextureMode();
+#undef TT
 
   Image img = LoadImageFromTexture(rt.texture);
   ImageFlipVertical(&img); /* render textures read back upside-down */
   bool ok = ExportImage(img, outpath);
   UnloadImage(img);
   UnloadRenderTexture(rt);
+  if (fr)
+    UnloadFont(hf);
+  if (fb)
+    UnloadFont(hb);
   return ok;
 }
 
@@ -673,6 +696,10 @@ int main(int argc, char **argv) {
   const char *reg = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf";
   const char *bld = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-SemiBold.ttf";
   bool gotreg = FileExists(reg), gotbld = FileExists(bld);
+  if (gotreg)
+    snprintf(FONT_REG, sizeof FONT_REG, "%s", reg);
+  if (gotbld)
+    snprintf(FONT_BLD, sizeof FONT_BLD, "%s", bld);
   /* large atlas + mipmaps + trilinear keeps small text sharp when downscaled */
   FONT = gotreg ? LoadFontEx(reg, 64, NULL, 0) : GetFontDefault();
   FONTB = gotbld ? LoadFontEx(bld, 64, NULL, 0) : FONT;
