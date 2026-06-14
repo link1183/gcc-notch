@@ -203,26 +203,17 @@ void ls_stop(void) {
 
 bool ls_listening(void) { return listening_ok; }
 
-bool ls_connected(void) {
-  pthread_mutex_lock(&mtx);
-  bool c = client_on;
-  pthread_mutex_unlock(&mtx);
-  return c;
-}
+#define LS_GETTER(fn, type, field)                                             \
+  type fn(void) {                                                              \
+    pthread_mutex_lock(&mtx);                                                  \
+    type v = (field);                                                          \
+    pthread_mutex_unlock(&mtx);                                                \
+    return v;                                                                  \
+  }
 
-long ls_total_lines(void) {
-  pthread_mutex_lock(&mtx);
-  long t = total_lines;
-  pthread_mutex_unlock(&mtx);
-  return t;
-}
-
-int ls_log_count(void) {
-  pthread_mutex_lock(&mtx);
-  int n = log_count;
-  pthread_mutex_unlock(&mtx);
-  return n;
-}
+LS_GETTER(ls_connected, bool, client_on)
+LS_GETTER(ls_total_lines, long, total_lines)
+LS_GETTER(ls_log_count, int, log_count)
 
 void ls_log_copy(int i, char *out, size_t n) {
   if (!out || n == 0)
@@ -236,37 +227,8 @@ void ls_log_copy(int i, char *out, size_t n) {
   pthread_mutex_unlock(&mtx);
 }
 
-bool ls_run_active(void) {
-  pthread_mutex_lock(&mtx);
-  bool a = run_active;
-  pthread_mutex_unlock(&mtx);
-  return a;
-}
-
-long ls_start_seq(void) {
-  pthread_mutex_lock(&mtx);
-  long v = start_seq;
-  pthread_mutex_unlock(&mtx);
-  return v;
-}
-
-long ls_end_seq(void) {
-  pthread_mutex_lock(&mtx);
-  long v = end_seq;
-  pthread_mutex_unlock(&mtx);
-  return v;
-}
-
-long ls_game_ms(void) {
-  pthread_mutex_lock(&mtx);
-  long v = game_ms;
-  pthread_mutex_unlock(&mtx);
-  return v;
-}
-
-long ls_final_ms(void) {
-  pthread_mutex_lock(&mtx);
-  long v = final_ms;
-  pthread_mutex_unlock(&mtx);
-  return v;
-}
+LS_GETTER(ls_run_active, bool, run_active)
+LS_GETTER(ls_start_seq, long, start_seq)
+LS_GETTER(ls_end_seq, long, end_seq)
+LS_GETTER(ls_game_ms, long, game_ms)
+LS_GETTER(ls_final_ms, long, final_ms)

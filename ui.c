@@ -38,6 +38,11 @@ static void txt(Font f, const char *s, float x, float y, float sz, Color c) {
   DrawTextEx(f, s, (Vector2){roundf(x), roundf(y)}, sz, sz / 16.0f, c);
 }
 
+/* on-screen width of s at size sz, matching txt()'s letter spacing */
+static float tw(Font f, const char *s, float sz) {
+  return MeasureTextEx(f, s, sz, sz / 16.0f).x;
+}
+
 /* ---- viewer helpers ---------------------------------------------------- */
 static void viewer_path(char *b, size_t n) { eng_config_path(b, n, "viewer"); }
 
@@ -416,6 +421,17 @@ static const char *shortname(const char *s) {
   return s;
 }
 
+/* join count names with ';' into buf for a raygui dropdown list */
+static void dropdown_items(char *buf, size_t n, int count,
+                           const char *(*name)(int)) {
+  buf[0] = 0;
+  for (int i = 0; i < count; i++) {
+    if (i)
+      strncat(buf, ";", n - strlen(buf) - 1);
+    strncat(buf, name(i), n - strlen(buf) - 1);
+  }
+}
+
 /* ---- per-stick input trail (ring buffer of recent raw/remapped points) - */
 #define TRAIL_N 90
 static int rxh[2][TRAIL_N], ryh[2][TRAIL_N], oxh[2][TRAIL_N], oyh[2][TRAIL_N];
@@ -524,8 +540,8 @@ static void draw_stick(Rectangle outer, const char *title, int stick) {
   /* live axis values, bottom-left, on a backing so they read over the grid */
   const char *r1 = TextFormat("raw  %d, %d", rx, ry);
   const char *r2 = cal ? TextFormat("out  %d, %d", ox, oy) : "";
-  float w1 = MeasureTextEx(FONT, r1, 13, 13 / 16.0f).x;
-  float w2 = cal ? MeasureTextEx(FONT, r2, 13, 13 / 16.0f).x : 0;
+  float w1 = tw(FONT, r1, 13);
+  float w2 = cal ? tw(FONT, r2, 13) : 0;
   float bw = (w1 > w2 ? w1 : w2) + 14, bh = cal ? 42 : 23;
   Rectangle rb = {a.x + 6, a.y + a.height - bh - 6, bw, bh};
   DrawRectangleRounded(rb, 0.28f, 6, Fade(PANEL2, 0.85f));
@@ -546,7 +562,7 @@ static void draw_stick(Rectangle outer, const char *title, int stick) {
 static float chip(float x, float y, Color c, const char *label) {
   DrawCircleV((Vector2){x + 5, y + 7}, 5, c);
   txt(FONT, label, x + 16, y, 13, DIM);
-  return x + 16 + MeasureTextEx(FONT, label, 13, 13 / 16.0f).x + 22;
+  return x + 16 + tw(FONT, label, 13) + 22;
 }
 
 /* ---- headless daemon mode --------------------------------------------- */
@@ -606,10 +622,8 @@ static void draw_stream_view(int bg, bool show_hint) {
     const char *m1 = "No skins found.";
     const char *m2 =
         "Drop a skin folder (with skin.xml) into ~/.config/gcc-notch/skins/";
-    txt(FONTB, m1, ww / 2.0f - MeasureTextEx(FONTB, m1, 22, 22 / 16.0f).x / 2,
-        wh / 2.0f - 30, 22, TXT);
-    txt(FONT, m2, ww / 2.0f - MeasureTextEx(FONT, m2, 14, 14 / 16.0f).x / 2,
-        wh / 2.0f + 4, 14, DIM);
+    txt(FONTB, m1, ww / 2.0f - tw(FONTB, m1, 22) / 2, wh / 2.0f - 30, 22, TXT);
+    txt(FONT, m2, ww / 2.0f - tw(FONT, m2, 14) / 2, wh / 2.0f + 4, 14, DIM);
   }
 }
 
@@ -1074,7 +1088,7 @@ int main(int argc, char **argv) {
       stats_save_t = now;
     }
     const char *perf = TextFormat("%d fps   %d ev/s", GetFPS(), evrate);
-    float pwf = MeasureTextEx(FONT, perf, 13, 13 / 16.0f).x;
+    float pwf = tw(FONT, perf, 13);
     txt(FONT, perf, W - 28 - pwf, H - 22, 13, DIM);
 
     /* status pill, top-right */
@@ -1082,7 +1096,7 @@ int main(int argc, char **argv) {
     Color sc = conn ? (eng_has_cal() ? GOOD : WARN) : BAD;
     const char *st =
         conn ? (eng_has_cal() ? "ready" : "not calibrated") : "disconnected";
-    float pw = MeasureTextEx(FONT, st, 14, 14 / 16.0f).x + 44;
+    float pw = tw(FONT, st, 14) + 44;
     Rectangle pill = {W - 28 - pw, 18, pw, 28};
     DrawRectangleRounded(pill, 1.0f, 12, PANEL2);
     DrawRectangleRoundedLinesEx(pill, 1.0f, 12, 1.0f, Fade(sc, 0.5f));
@@ -1092,7 +1106,7 @@ int main(int argc, char **argv) {
     /* REMAP ACTIVE badge (pulsing), left of the status pill */
     if (eng_remap_active()) {
       const char *bt = "REMAP ACTIVE";
-      float bw = MeasureTextEx(FONT, bt, 13, 13 / 16.0f).x + 36;
+      float bw = tw(FONT, bt, 13) + 36;
       Rectangle rb = {pill.x - 12 - bw, 18, bw, 28};
       DrawRectangleRounded(rb, 1.0f, 12, Fade(GOOD, 0.15f));
       DrawRectangleRoundedLinesEx(rb, 1.0f, 12, 1.0f, Fade(GOOD, 0.7f));
@@ -1252,15 +1266,11 @@ int main(int argc, char **argv) {
     int pc = eng_profile_count();
     if (pc > 0) {
       char items[1024];
-      items[0] = 0;
+      dropdown_items(items, sizeof items, pc, eng_profile_name);
       int curidx = 0;
-      for (int i = 0; i < pc; i++) {
-        if (i)
-          strncat(items, ";", sizeof items - strlen(items) - 1);
-        strncat(items, eng_profile_name(i), sizeof items - strlen(items) - 1);
+      for (int i = 0; i < pc; i++)
         if (!strcmp(eng_profile_name(i), eng_profile_current()))
           curidx = i;
-      }
       if (!dd_edit)
         dd_idx = curidx;
       if (GuiDropdownBox((Rectangle){cp.x + 16, row3, 170, 28}, items, &dd_idx,
@@ -1285,12 +1295,7 @@ int main(int argc, char **argv) {
     int skc = skin_count();
     if (skc > 0) {
       char items[1024];
-      items[0] = 0;
-      for (int i = 0; i < skc; i++) {
-        if (i)
-          strncat(items, ";", sizeof items - strlen(items) - 1);
-        strncat(items, skin_name(i), sizeof items - strlen(items) - 1);
-      }
+      dropdown_items(items, sizeof items, skc, skin_name);
       if (!sk_edit)
         sk_idx = skin_current() < 0 ? 0 : skin_current();
       if (GuiDropdownBox((Rectangle){cp.x + 300, row4, cp.width - 316, 30},
@@ -1403,9 +1408,8 @@ int main(int argc, char **argv) {
       const char *gcn = eng_btnmap_name();
       txt(FONT, "Press your", box.x + 28, box.y + 92, 16, TXT);
       txt(FONTB, gcn, box.x + 150, box.y + 88, 26, ACCENT);
-      txt(FONT, "button",
-          box.x + 150 + MeasureTextEx(FONTB, gcn, 26, 26 / 16.0f).x + 12,
-          box.y + 92, 16, TXT);
+      txt(FONT, "button", box.x + 150 + tw(FONTB, gcn, 26) + 12, box.y + 92, 16,
+          TXT);
       txt(FONT, "(or Skip if your controller lacks it)", box.x + 28,
           box.y + 124, 13, DIM);
 
