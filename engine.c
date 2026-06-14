@@ -136,6 +136,7 @@ static long drift_rest_n[2];                    /* settled-frame count */
 static double drift_reach[2][ENG_NOTCH]; /* max deflection seen / notch */
 static long drift_hits[2][ENG_NOTCH];    /* samples assigned / notch */
 static int drift_prev[2][2];             /* prev raw x,y for velocity */
+static double notch_ang[2][ENG_NOTCH];   /* cached notch angles (per cal) */
 
 static void drift_reset(void) {
   memset(drift_rest_x, 0, sizeof drift_rest_x);
@@ -290,6 +291,12 @@ static void rebuild_maps(void) {
   build_map(&cal[0], &map[0], diag_frac[0]);
   build_map(&cal[1], &map[1], diag_frac[1]);
   recompute_is_stick();
+  /* notch angles are fixed by the calibration; cache them so the per-frame
+     drift sampler doesn't recompute 8 atan2() per stick every device frame */
+  for (int s = 0; s < 2; s++)
+    for (int i = 0; i < ENG_NOTCH; i++)
+      notch_ang[s][i] =
+          atan2(cal[s].ny[i] - cal[s].cy, cal[s].nx[i] - cal[s].cx);
   drift_reset();
 }
 
@@ -958,8 +965,12 @@ static void drift_sample(void) {
       int best = 0;
       double bestd = 1e9;
       for (int i = 0; i < ENG_NOTCH; i++) {
-        double na = atan2(cal[s].ny[i] - cal[s].cy, cal[s].nx[i] - cal[s].cx);
-        double d = fabs(atan2(sin(phi - na), cos(phi - na)));
+        double d = phi - notch_ang[s][i]; /* wrap to [-pi, pi] without trig */
+        if (d > M_PI)
+          d -= 2 * M_PI;
+        else if (d < -M_PI)
+          d += 2 * M_PI;
+        d = fabs(d);
         if (d < bestd) {
           bestd = d;
           best = i;

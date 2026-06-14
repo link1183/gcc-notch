@@ -1095,26 +1095,35 @@ int main(int argc, char **argv) {
     bool conn = eng_connected();
 
     /* drift watch: nudge toward recalibration once a calibrated stick has worn
-   past its calibration. 8% under-reach or 6 axis-units of center drift. */
-    char drift_msg[96] = {0};
-    bool drifting = false;
-    if (conn && eng_has_cal()) {
-      for (int s = 0; s < 2 && !drifting; s++) {
-        eng_drift_info d;
-        eng_drift(s, &d);
-        if (!d.valid)
-          continue;
-        const char *sn = s == 0 ? "Control" : "C";
-        if (d.worst_notch >= 0 && d.worst_reach_dev >= 0.08) {
-          snprintf(drift_msg, sizeof drift_msg,
-                   "%s stick: %s notch reach -%.0f%%  (recalibrate)", sn,
-                   eng_notch_name(s, d.worst_notch), d.worst_reach_dev * 100.0);
-          drifting = true;
-        } else if (d.center_dev >= 6.0) {
-          snprintf(drift_msg, sizeof drift_msg,
-                   "%s stick: center drift %.0f  (recalibrate)", sn,
-                   d.center_dev);
-          drifting = true;
+   past its calibration. 8% under-reach or 6 axis-units of center drift.
+   The estimate barely moves frame-to-frame, so recompute it a couple of times
+   a second rather than scanning every notch on every frame. */
+    static char drift_msg[96] = {0};
+    static bool drifting = false;
+    static double drift_t = -1;
+    if (now - drift_t >= 0.5) {
+      drift_t = now;
+      drift_msg[0] = 0;
+      drifting = false;
+      if (conn && eng_has_cal()) {
+        for (int s = 0; s < 2 && !drifting; s++) {
+          eng_drift_info d;
+          eng_drift(s, &d);
+          if (!d.valid)
+            continue;
+          const char *sn = s == 0 ? "Control" : "C";
+          if (d.worst_notch >= 0 && d.worst_reach_dev >= 0.08) {
+            snprintf(drift_msg, sizeof drift_msg,
+                     "%s stick: %s notch reach -%.0f%%  (recalibrate)", sn,
+                     eng_notch_name(s, d.worst_notch),
+                     d.worst_reach_dev * 100.0);
+            drifting = true;
+          } else if (d.center_dev >= 6.0) {
+            snprintf(drift_msg, sizeof drift_msg,
+                     "%s stick: center drift %.0f  (recalibrate)", sn,
+                     d.center_dev);
+            drifting = true;
+          }
         }
       }
     }
