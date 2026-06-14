@@ -16,6 +16,7 @@ int skin_current(void);         /* active index, -1 if none */
 void skin_select(int i);        /* select + persist the choice */
 void skin_next(void);           /* cycle to the next skin */
 bool skin_have(void);           /* a skin is loaded and active */
+bool skin_size(int *w, int *h); /* active skin bg pixel size; false if none */
 
 void skin_set_font(Font f);    /* font used for on-screen stick values */
 void skin_set_values(bool on); /* show/hide the numeric stick readout */

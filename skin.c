@@ -295,6 +295,13 @@ void skin_reload(void) {
 
 int skin_current(void) { return cur; }
 bool skin_have(void) { return cur >= 0 && cur < nskins; }
+bool skin_size(int *w, int *h) {
+  if (cur < 0 || cur >= nskins)
+    return false;
+  *w = (int)skins[cur].bgw;
+  *h = (int)skins[cur].bgh;
+  return true;
+}
 void skin_select(int i) {
   if (i >= 0 && i < nskins) {
     cur = i;

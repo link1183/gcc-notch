@@ -41,26 +41,28 @@ static void viewer_path(char *b, size_t n) {
   snprintf(b, n, "%s/.config/gcc-notch/viewer", h ? h : ".");
 }
 
-static void viewer_save(int bg, bool bl, bool sv) {
+static void viewer_save(int bg, bool bl, bool sv, bool hp) {
   char p[600];
   viewer_path(p, sizeof p);
   FILE *f = fopen(p, "w");
   if (f) {
-    fprintf(f, "%d %d %d\n", bg, bl ? 1 : 0, sv ? 1 : 0);
+    fprintf(f, "%d %d %d %d\n", bg, bl ? 1 : 0, sv ? 1 : 0, hp ? 1 : 0);
     fclose(f);
   }
 }
 
-static void viewer_load(int *bg, bool *bl, bool *sv) {
+static void viewer_load(int *bg, bool *bl, bool *sv, bool *hp) {
   char p[600];
   viewer_path(p, sizeof p);
   FILE *f = fopen(p, "r");
   if (f) {
-    int b = 0, d = 0, v = 1; /* v defaults on; tolerates old 2-field files */
-    if (fscanf(f, "%d %d %d", &b, &d, &v) >= 2) {
+    /* v defaults on, h off; tolerates older 2/3-field files */
+    int b = 0, d = 0, v = 1, h = 0;
+    if (fscanf(f, "%d %d %d %d", &b, &d, &v, &h) >= 2) {
       *bg = ((b % 3) + 3) % 3;
       *bl = d != 0;
       *sv = v != 0;
+      *hp = h != 0;
     }
     fclose(f);
   }
@@ -271,13 +273,15 @@ static int run_daemon(const char *devpath) {
 
 /* ---- skinned stream viewer -------------------------------------------- */
 static void draw_stream_view(int bg, bool show_hint) {
+  /* the window is resized to the skin in the viewer, so draw to its live size */
+  int ww = GetScreenWidth(), wh = GetScreenHeight();
   Color bgc = bg == 1   ? (Color){0, 177, 64, 255}
               : bg == 2 ? (Color){255, 0, 255, 255}
                         : (Color){8, 8, 10, 255};
   ClearBackground(bgc);
 
   if (skin_have()) {
-    skin_draw(W, H);
+    skin_draw(ww, wh);
     if (show_hint) {
       const char *au = skin_author(skin_current());
       txt(FONT,
@@ -286,17 +290,30 @@ static void draw_stream_view(int bg, bool show_hint) {
               : TextFormat("skin: %s", skin_name(skin_current())),
           24, 24, 14, Fade(WHITE, 0.6f));
       txt(FONT,
-          "V exit   K skin   R reload   B background   F borderless   N values",
-          24, H - 30, 14, Fade(WHITE, 0.5f));
+          "V exit  K skin  R reload  B background  F borderless  N values  H "
+          "pin",
+          24, wh - 30, 14, Fade(WHITE, 0.5f));
     }
   } else {
     const char *m1 = "No skins found.";
     const char *m2 =
         "Drop a skin folder (with skin.xml) into ~/.config/gcc-notch/skins/";
-    txt(FONTB, m1, W / 2 - MeasureTextEx(FONTB, m1, 22, 22 / 16.0f).x / 2,
-        H / 2 - 30, 22, TXT);
-    txt(FONT, m2, W / 2 - MeasureTextEx(FONT, m2, 14, 14 / 16.0f).x / 2,
-        H / 2 + 4, 14, DIM);
+    txt(FONTB, m1, ww / 2 - MeasureTextEx(FONTB, m1, 22, 22 / 16.0f).x / 2,
+        wh / 2 - 30, 22, TXT);
+    txt(FONT, m2, ww / 2 - MeasureTextEx(FONT, m2, 14, 14 / 16.0f).x / 2,
+        wh / 2 + 4, 14, DIM);
+  }
+}
+
+/* size the window to the active skin (largest fit within W x H) so the overlay
+   fills it with no letterbox borders; restore the editor size when no skin */
+static void fit_window_to_skin(void) {
+  int sw, sh;
+  if (skin_have() && skin_size(&sw, &sh) && sw > 0 && sh > 0) {
+    float sc = fminf((float)W / sw, (float)H / sh);
+    SetWindowSize((int)(sw * sc + 0.5f), (int)(sh * sc + 0.5f));
+  } else {
+    SetWindowSize(W, H);
   }
 }
 
@@ -371,9 +388,11 @@ int main(int argc, char **argv) {
 
   /* stream-view state */
   bool stream_view = start_viewer, borderless = false;
-  int stream_bg = 0; /* 0 = black, 1 = chroma green, 2 = chroma magenta */
+  int stream_bg = 0;       /* 0 = black, 1 = chroma green, 2 = chroma magenta */
   bool show_values = true; /* numeric stick readout overlay (toggle: N) */
-  viewer_load(&stream_bg, &borderless, &show_values);
+  bool hint_pin = false;   /* H keeps the keybind hints on screen */
+  bool was_stream = false; /* tracks viewer enter/exit to resize the window */
+  viewer_load(&stream_bg, &borderless, &show_values, &hint_pin);
   skin_set_values(show_values);
   if (borderless)
     SetWindowState(FLAG_WINDOW_UNDECORATED);
@@ -390,18 +409,30 @@ int main(int argc, char **argv) {
     }
 
     if (stream_view) {
+      /* any mouse movement re-shows the hint bar for a few seconds */
+      Vector2 md = GetMouseDelta();
+      if (md.x != 0.0f || md.y != 0.0f)
+        stream_enter = GetTime();
       if (IsKeyPressed(KEY_B)) {
         stream_bg = (stream_bg + 1) % 3;
-        viewer_save(stream_bg, borderless, show_values);
+        viewer_save(stream_bg, borderless, show_values, hint_pin);
       }
-      if (IsKeyPressed(KEY_K))
+      if (IsKeyPressed(KEY_K)) {
         skin_next();
-      if (IsKeyPressed(KEY_R))
+        fit_window_to_skin();
+      }
+      if (IsKeyPressed(KEY_R)) {
         skin_reload();
+        fit_window_to_skin();
+      }
+      if (IsKeyPressed(KEY_H)) {
+        hint_pin = !hint_pin;
+        viewer_save(stream_bg, borderless, show_values, hint_pin);
+      }
       if (IsKeyPressed(KEY_N)) {
         show_values = !show_values;
         skin_set_values(show_values);
-        viewer_save(stream_bg, borderless, show_values);
+        viewer_save(stream_bg, borderless, show_values, hint_pin);
       }
       if (IsKeyPressed(KEY_F)) {
         borderless = !borderless;
@@ -409,7 +440,7 @@ int main(int argc, char **argv) {
           SetWindowState(FLAG_WINDOW_UNDECORATED);
         else
           ClearWindowState(FLAG_WINDOW_UNDECORATED);
-        viewer_save(stream_bg, borderless, show_values);
+        viewer_save(stream_bg, borderless, show_values, hint_pin);
       }
       if (IsKeyPressed(KEY_ESCAPE))
         stream_view = false;
@@ -447,10 +478,20 @@ int main(int argc, char **argv) {
       }
     }
 
+    /* on entering/leaving the viewer, size the window to the skin (no borders
+       for OBS) or back to the editor size */
+    if (stream_view != was_stream) {
+      if (stream_view)
+        fit_window_to_skin();
+      else
+        SetWindowSize(W, H);
+      was_stream = stream_view;
+    }
+
     /* stream view replaces the whole window */
     if (stream_view) {
       BeginDrawing();
-      draw_stream_view(stream_bg, GetTime() - stream_enter < 4.0);
+      draw_stream_view(stream_bg, hint_pin || GetTime() - stream_enter < 4.0);
       EndDrawing();
       continue;
     }
