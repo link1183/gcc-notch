@@ -308,10 +308,12 @@ void skin_next(void) {
 
 static Font skin_font;
 static bool skin_have_font;
+static bool skin_show_values = true; /* toggled from the viewer (N key) */
 void skin_set_font(Font f) {
   skin_font = f;
   skin_have_font = true;
 }
+void skin_set_values(bool on) { skin_show_values = on; }
 
 void skin_draw(int win_w, int win_h) {
   if (cur < 0 || cur >= nskins)
@@ -359,7 +361,7 @@ void skin_draw(int win_w, int win_h) {
       Rectangle sr =
           DST(e->x + nx * e->xrange, e->y + ny * e->yrange, e->w, e->h);
       DrawTexturePro(e->tex, full, sr, (Vector2){0, 0}, 0, WHITE);
-      { /* live stick value, centered on the (moving) stick image */
+      if (skin_show_values) { /* live value, centered on the (moving) image */
         Font f = skin_have_font ? skin_font : GetFontDefault();
         const char *str = TextFormat("%d,%d", vx, vy);
         float fs = sr.height * 0.22f;

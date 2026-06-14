@@ -41,25 +41,26 @@ static void viewer_path(char *b, size_t n) {
   snprintf(b, n, "%s/.config/gcc-notch/viewer", h ? h : ".");
 }
 
-static void viewer_save(int bg, bool bl) {
+static void viewer_save(int bg, bool bl, bool sv) {
   char p[600];
   viewer_path(p, sizeof p);
   FILE *f = fopen(p, "w");
   if (f) {
-    fprintf(f, "%d %d\n", bg, bl ? 1 : 0);
+    fprintf(f, "%d %d %d\n", bg, bl ? 1 : 0, sv ? 1 : 0);
     fclose(f);
   }
 }
 
-static void viewer_load(int *bg, bool *bl) {
+static void viewer_load(int *bg, bool *bl, bool *sv) {
   char p[600];
   viewer_path(p, sizeof p);
   FILE *f = fopen(p, "r");
   if (f) {
-    int b = 0, d = 0;
-    if (fscanf(f, "%d %d", &b, &d) == 2) {
+    int b = 0, d = 0, v = 1; /* v defaults on; tolerates old 2-field files */
+    if (fscanf(f, "%d %d %d", &b, &d, &v) >= 2) {
       *bg = ((b % 3) + 3) % 3;
       *bl = d != 0;
+      *sv = v != 0;
     }
     fclose(f);
   }
@@ -283,8 +284,9 @@ static void draw_stream_view(int bg, bool show_hint) {
           (au && au[0])
               ? TextFormat("skin: %s  ·  by %s", skin_name(skin_current()), au)
               : TextFormat("skin: %s", skin_name(skin_current())),
-          +24, 24, 14, Fade(WHITE, 0.6f));
-      txt(FONT, "V exit    K skin    R reload    B background    F borderless",
+          24, 24, 14, Fade(WHITE, 0.6f));
+      txt(FONT,
+          "V exit   K skin   R reload   B background   F borderless   N values",
           24, H - 30, 14, Fade(WHITE, 0.5f));
     }
   } else {
@@ -370,7 +372,9 @@ int main(int argc, char **argv) {
   /* stream-view state */
   bool stream_view = start_viewer, borderless = false;
   int stream_bg = 0; /* 0 = black, 1 = chroma green, 2 = chroma magenta */
-  viewer_load(&stream_bg, &borderless);
+  bool show_values = true; /* numeric stick readout overlay (toggle: N) */
+  viewer_load(&stream_bg, &borderless, &show_values);
+  skin_set_values(show_values);
   if (borderless)
     SetWindowState(FLAG_WINDOW_UNDECORATED);
   double stream_enter = GetTime();
@@ -388,19 +392,24 @@ int main(int argc, char **argv) {
     if (stream_view) {
       if (IsKeyPressed(KEY_B)) {
         stream_bg = (stream_bg + 1) % 3;
-        viewer_save(stream_bg, borderless);
+        viewer_save(stream_bg, borderless, show_values);
       }
       if (IsKeyPressed(KEY_K))
         skin_next();
       if (IsKeyPressed(KEY_R))
         skin_reload();
+      if (IsKeyPressed(KEY_N)) {
+        show_values = !show_values;
+        skin_set_values(show_values);
+        viewer_save(stream_bg, borderless, show_values);
+      }
       if (IsKeyPressed(KEY_F)) {
         borderless = !borderless;
         if (borderless)
           SetWindowState(FLAG_WINDOW_UNDECORATED);
         else
           ClearWindowState(FLAG_WINDOW_UNDECORATED);
-        viewer_save(stream_bg, borderless);
+        viewer_save(stream_bg, borderless, show_values);
       }
       if (IsKeyPressed(KEY_ESCAPE))
         stream_view = false;
