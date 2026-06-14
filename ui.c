@@ -591,16 +591,25 @@ static void draw_stream_view(int bg, bool show_hint) {
   }
 }
 
-/* size the window to the active skin (largest fit within W x H) so the overlay
-   fills it with no letterbox borders; restore the editor size when no skin */
+/* force the window to the skin's native ("actual input viewer") size so the
+   overlay is pixel-perfect with no scaling or borders; only shrink if the skin
+   is larger than the monitor. Restore the editor size when there's no skin. */
+static int g_winw = W, g_winh = H; /* the viewer's locked target size */
 static void fit_window_to_skin(void) {
   int sw, sh;
   if (skin_have() && skin_size(&sw, &sh) && sw > 0 && sh > 0) {
-    float sc = fminf((float)W / sw, (float)H / sh);
-    SetWindowSize((int)(sw * sc + 0.5f), (int)(sh * sc + 0.5f));
+    int mon = GetCurrentMonitor();
+    int mw = GetMonitorWidth(mon), mh = GetMonitorHeight(mon);
+    float sc = 1.0f;
+    if (mw > 0 && mh > 0)
+      sc = fminf(1.0f, fminf((float)mw / sw, (float)mh / sh));
+    g_winw = (int)(sw * sc + 0.5f);
+    g_winh = (int)(sh * sc + 0.5f);
   } else {
-    SetWindowSize(W, H);
+    g_winw = W;
+    g_winh = H;
   }
+  SetWindowSize(g_winw, g_winh);
 }
 
 /* dedicated viewer process: no controls, follows the device the control
@@ -619,6 +628,12 @@ static void run_viewer_loop(void) {
   char cur_src[300] = "";
   double last_chk = 0, enter = GetTime();
   while (!WindowShouldClose()) {
+    /* hard-lock the window to the skin size: if the compositor (tiling, a stray
+       drag, a resize glitch) changed it, snap straight back so OBS only ever
+       sees the skin with no background bleed */
+    if (GetScreenWidth() != g_winw || GetScreenHeight() != g_winh)
+      SetWindowSize(g_winw, g_winh);
+
     if (GetTime() - last_chk > 0.25) { /* follow the published input device */
       last_chk = GetTime();
       char src[300];
@@ -687,30 +702,42 @@ int main(int argc, char **argv) {
   if (daemon_mode)
     return run_daemon(devpath);
 
-  SetConfigFlags(FLAG_VSYNC_HINT | FLAG_WINDOW_HIGHDPI);
-  InitWindow(W, H, "GCC Notch Remapper");
+  /* no HIGHDPI: displays here run at scale 1.0 (render == screen), so it buys
+     nothing and triggers a resize feedback fight with the compositor.
+     The editor scales to fit and is resizable; the viewer is locked to the
+     skin's exact size (non-resizable) so OBS never sees background around it. */
+  unsigned cfgflags = FLAG_VSYNC_HINT;
+  if (!viewer_proc)
+    cfgflags |= FLAG_WINDOW_RESIZABLE;
+  SetConfigFlags(cfgflags);
+  /* the title doubles as the Wayland app_id (class) and the class is fixed at
+     creation, so name the viewer process distinctly up front -- that lets a
+     Hyprland rule match it by class and float it immediately */
+  InitWindow(W, H, viewer_proc ? "GCC Notch Viewer" : "GCC Notch Remapper");
   SetTargetFPS(240);
   SetExitKey(KEY_NULL); /* we handle Esc ourselves (modal cancel / quit) */
 
-  /* crisp TTF; fall back to the built-in font if unavailable */
-  const char *reg = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Regular.ttf";
-  const char *bld = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-SemiBold.ttf";
+  /* crisp TTF; fall back to the built-in font if unavailable. Medium body /
+     Bold headings read better than Regular/SemiBold at small sizes, and since
+     the font is monospace the heavier weight keeps identical glyph widths (no
+     layout shift). */
+  const char *reg = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Medium.ttf";
+  const char *bld = "/usr/share/fonts/TTF/JetBrainsMonoNerdFont-Bold.ttf";
   bool gotreg = FileExists(reg), gotbld = FileExists(bld);
   if (gotreg)
     snprintf(FONT_REG, sizeof FONT_REG, "%s", reg);
   if (gotbld)
     snprintf(FONT_BLD, sizeof FONT_BLD, "%s", bld);
-  /* large atlas + mipmaps + trilinear keeps small text sharp when downscaled */
-  FONT = gotreg ? LoadFontEx(reg, 64, NULL, 0) : GetFontDefault();
-  FONTB = gotbld ? LoadFontEx(bld, 64, NULL, 0) : FONT;
-  if (gotreg) {
-    GenTextureMipmaps(&FONT.texture);
-    SetTextureFilter(FONT.texture, TEXTURE_FILTER_TRILINEAR);
-  }
-  if (gotbld) {
-    GenTextureMipmaps(&FONTB.texture);
-    SetTextureFilter(FONTB.texture, TEXTURE_FILTER_TRILINEAR);
-  }
+  /* The window renders 1:1 (no display scaling) and no UI text exceeds ~26px,
+     so a 64px mipmapped/trilinear atlas was minifying every glyph ~4x through
+     blurry mip levels -- the "bloom". A tight 36px atlas with plain bilinear
+     keeps glyphs near native size and crisp. */
+  FONT = gotreg ? LoadFontEx(reg, 36, NULL, 0) : GetFontDefault();
+  FONTB = gotbld ? LoadFontEx(bld, 36, NULL, 0) : FONT;
+  if (gotreg)
+    SetTextureFilter(FONT.texture, TEXTURE_FILTER_BILINEAR);
+  if (gotbld)
+    SetTextureFilter(FONTB.texture, TEXTURE_FILTER_BILINEAR);
 
   /* raygui dark theme */
   GuiSetFont(FONT);
@@ -745,6 +772,7 @@ int main(int argc, char **argv) {
   }
 
   signal(SIGCHLD, SIG_IGN); /* reap spawned viewer windows automatically */
+  MaximizeWindow();         /* fill the screen; Hyprland tiles it fullscreen */
   eng_stats_load();         /* control process owns the saved stats file */
   ls_start();               /* probe dusklight's LiveSplit timer commands */
   if (auto_remap)
@@ -987,13 +1015,27 @@ int main(int argc, char **argv) {
     }
 
     /* on entering/leaving the viewer, size the window to the skin (no borders
-       for OBS) or back to the editor size */
+       for OBS) or back to filling the screen */
     if (stream_view != was_stream) {
       if (stream_view)
         fit_window_to_skin();
       else
-        SetWindowSize(W, H);
+        MaximizeWindow();
       was_stream = stream_view;
+    }
+
+    /* scale-to-fit: the editor is laid out on a fixed W x H design canvas and
+       scaled to fill the (maximized) window; the stream view draws natively.
+       Map the mouse back into design space so raygui hit-tests line up. */
+    int sw = GetScreenWidth(), sh = GetScreenHeight();
+    float uiscale = fminf((float)sw / W, (float)sh / H);
+    float uiox = (sw - W * uiscale) / 2.0f, uioy = (sh - H * uiscale) / 2.0f;
+    if (stream_view) {
+      SetMouseOffset(0, 0);
+      SetMouseScale(1.0f, 1.0f);
+    } else {
+      SetMouseOffset((int)(-uiox), (int)(-uioy));
+      SetMouseScale(1.0f / uiscale, 1.0f / uiscale);
     }
 
     /* stream view replaces the whole window */
@@ -1005,7 +1047,12 @@ int main(int argc, char **argv) {
     }
 
     BeginDrawing();
-    ClearBackground(BG);
+    ClearBackground(BG); /* fills the letterbox bars around the design canvas */
+    Camera2D uicam = {.offset = {uiox, uioy},
+                      .target = {0, 0},
+                      .rotation = 0,
+                      .zoom = uiscale};
+    BeginMode2D(uicam);
 
     /* ---- header -------------------------------------------------------- */
     DrawRectangle(0, 0, W, 64, PANEL);
@@ -1472,11 +1519,21 @@ int main(int argc, char **argv) {
       };
       float tx[4] = {bx + 28, bx + 196, bx + 364, bx + 512};
       for (int i = 0; i < 4; i++) {
+        Rectangle tb = {tx[i] - 12, by + 46, 152, 54};
+        DrawRectangleRounded(tb, 0.16f, 6, PANEL2);
+        DrawRectangleRounded((Rectangle){tb.x, tb.y, 3, tb.height}, 1.0f, 4,
+                             Fade(tile[i].c, 0.7f));
         txt(FONTB, tile[i].v, tx[i], by + 56, 24, tile[i].c);
-        txt(FONT, tile[i].l, tx[i], by + 86, 11, DIM);
+        txt(FONT, tile[i].l, tx[i], by + 88, 11, DIM);
       }
-      DrawLine((int)(bx + 20), (int)(by + 116), (int)(bx + box.width - 20),
-               (int)(by + 116), LINE);
+
+      /* inset panels behind the three content columns for structure */
+      DrawRectangleRounded((Rectangle){colA - 14, by + 126, 210, 250}, 0.045f, 6,
+                           PANEL2);
+      DrawRectangleRounded((Rectangle){colB - 14, by + 126, 214, 358}, 0.045f, 6,
+                           PANEL2);
+      DrawRectangleRounded((Rectangle){colC - 14, by + 126, 210, 358}, 0.045f, 6,
+                           PANEL2);
 
       /* --- column A: lifetime button breakdown + D-pad --- */
       section_title("Buttons (lifetime)", colA, by + 132);
@@ -1662,6 +1719,7 @@ int main(int argc, char **argv) {
         confirm_stats_reset = false;
     }
 
+    EndMode2D();
     EndDrawing();
 
     /* deferred run-card PNG export: render-to-texture must be outside the

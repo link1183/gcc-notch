@@ -1,4 +1,6 @@
 /gcc-notch
 /gcc-notch-ui
 /skin_examples/Tron V2 with D-Pad
-/*.o
+*.o
+/engine.o
+/ui.o

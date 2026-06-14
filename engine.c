@@ -225,6 +225,16 @@ static void remap(const smap *mp, int rx, int ry, int *ox, int *oy) {
     }
   double x = mp->M[sec][0][0] * sx + mp->M[sec][0][1] * sy + OUT_CENTER;
   double y = mp->M[sec][1][0] * sx + mp->M[sec][1][1] * sy + OUT_CENTER;
+  /* radial clamp: never let the deflection exceed full-stick radius, so an
+     overshooting input or calibration can't push the output past maximum (a
+     box clamp alone would still allow a ~1.41x oversized diagonal) */
+  double dx = x - OUT_CENTER, dy = y - OUT_CENTER;
+  double mag = hypot(dx, dy);
+  if (mag > OUT_R) {
+    double k = OUT_R / mag;
+    x = OUT_CENTER + dx * k;
+    y = OUT_CENTER + dy * k;
+  }
   int xo = (int)lround(x), yo = (int)lround(y);
   if (xo < mp->amin)
     xo = mp->amin;
