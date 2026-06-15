@@ -11,7 +11,7 @@ It targets the device that identifies itself as
 
 ---
 
-# Table of contents
+## Table of contents
 
 - [gcc-notch](#gcc-notch)
   - [What it does](#what-it-does)
