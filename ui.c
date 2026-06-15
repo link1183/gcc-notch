@@ -4,9 +4,9 @@
 #define RAYGUI_IMPLEMENTATION
 #include "engine.h"
 #include "livesplit.h"
-#include "raygui.h"
 #include "skin.h"
 #include <math.h>
+#include <raygui.h>
 #include <signal.h>
 #include <stdio.h>
 #include <string.h>
