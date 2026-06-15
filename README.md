@@ -115,7 +115,7 @@ Dependencies (development headers):
 On Arch:
 
 ```sh
-sudo pacman -S base-devel libevdev raylib libxml2
+sudo pacman -S base-devel libevdev raylib libxml2 raygui
 ```
 
 Build:
@@ -431,6 +431,5 @@ Config files are written atomically (temp file + `rename`) where it matters.
 | `ui.c`           | raylib/raygui editor, calibration/trigger/button-map modals, stats overlay & exports, daemon + standalone-viewer roles, `main()`. |
 | `skin.c/.h`      | XML skin loading and drawing.                                                                                                     |
 | `livesplit.c/.h` | LiveSplit Server listener and run-state parsing.                                                                                  |
-| `raygui.h`       | Vendored immediate-mode GUI (third-party).                                                                                        |
 | `Makefile`       | Build + install.                                                                                                                  |
 | `skin_examples/` | Reference skin.                                                                                                                   |

@@ -12,7 +12,7 @@ $(BIN): $(OBJ)
 	$(CC) $(CFLAGS) -o $@ $(OBJ) $(LIBS)
 
 $(BUILD)/engine.o:    engine.c engine.h
-$(BUILD)/ui.o:        ui.c engine.h skin.h raygui.h livesplit.h
+$(BUILD)/ui.o:        ui.c engine.h skin.h livesplit.h
 $(BUILD)/skin.o:      skin.c skin.h engine.h
 $(BUILD)/livesplit.o: livesplit.c livesplit.h
 
